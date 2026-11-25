@@ -34,13 +34,14 @@ export type InstitutionType = 'publica' | 'privada' | 'comparticipada';
 export type InstitutionStatus = 'active' | 'suspended' | 'trial' | 'pending_validation';
 
 export interface InstitutionFeatures {
-  financialManagement: boolean; // Gestão Financeira e Propinas Multicaixa
-  evaluationCenter: boolean;    // Centro de Avaliações e Mini-Pautas INIDE
-  aiAssistant: boolean;         // Assistente Pedagógico com IA Gemini
-  officialDocuments: boolean;   // Emissão de Documentos Oficiais com QR Code
-  massEnrollment: boolean;      // Matrícula em Massa (Importação CSV/Lote)
-  specializedModules: boolean;  // Módulos Especializados (Pré-escolar, PEI, Superior)
-  reportsAndAnalytics: boolean; // Relatórios Estatísticos e Gráficos
+  financialManagement: boolean;       // Gestão Financeira e Propinas Multicaixa
+  evaluationCenter: boolean;          // Centro de Avaliações e Mini-Pautas INIDE
+  aiAssistant: boolean;               // Assistente Pedagógico com IA Gemini
+  officialDocuments: boolean;         // Emissão de Documentos Oficiais com QR Code
+  massEnrollment: boolean;            // Matrícula em Massa (Importação CSV/Lote)
+  specializedModules: boolean;        // Módulos Especializados (Pré-escolar, PEI, Superior)
+  reportsAndAnalytics: boolean;       // Relatórios Estatísticos e Gráficos
+  psychopedagogicalSupport?: boolean; // Acompanhamento Psicopedagógico e NEE (activado pelo Super Admin)
 }
 
 export const DEFAULT_INSTITUTION_FEATURES: InstitutionFeatures = {
@@ -51,7 +52,18 @@ export const DEFAULT_INSTITUTION_FEATURES: InstitutionFeatures = {
   massEnrollment: true,
   specializedModules: true,
   reportsAndAnalytics: true,
+  psychopedagogicalSupport: false,
 };
+
+export interface PsychopedagogicalInstitutionConfig {
+  activatedAt?: string;
+  activatedBy?: string;
+  specialistName?: string;
+  specialistEmail?: string;
+  specialistPhone?: string;
+  enabledProtocolIds?: string[];
+  notes?: string;
+}
 
 export interface Institution {
   id: string;
@@ -77,6 +89,7 @@ export interface Institution {
   logoUrl?: string;
   subsystems: EducationSubsystemCode[];
   features?: InstitutionFeatures;
+  psychopedagogicalConfig?: PsychopedagogicalInstitutionConfig;
   status: InstitutionStatus;
   maxClasses: number;
   currentClassesCount: number;
@@ -611,4 +624,76 @@ export interface Announcement {
   readByUserKeys: string[];
   archived?: boolean;
 }
+
+export type PsychopedagogicalCategory =
+  | 'nee_inclusao'
+  | 'dificuldade_aprendizagem'
+  | 'apoio_emocional'
+  | 'comportamento_assiduidade'
+  | 'altas_habilidades'
+  | 'orientacao_vocacional';
+
+export type PsychopedagogicalPriority = 'baixo' | 'moderado' | 'elevado' | 'critico';
+
+export type PsychopedagogicalStatus =
+  | 'em_triagem'
+  | 'em_acompanhamento'
+  | 'pei_activo'
+  | 'encaminhado'
+  | 'alta_pedagogica';
+
+export interface PsychopedagogicalProtocol {
+  id: string;
+  code: string;
+  title: string;
+  category: PsychopedagogicalCategory;
+  targetSubsystems: string[];
+  description: string;
+  screeningCriteria: string[];
+  interventionSteps: string[];
+  normativeReference: string;
+  isActive: boolean;
+  updatedAt: string;
+}
+
+export interface PsychopedagogicalSession {
+  id: string;
+  date: string;
+  specialistName: string;
+  sessionType:
+    | 'triagem_inicial'
+    | 'sessao_individual'
+    | 'reuniao_familia'
+    | 'observacao_turma'
+    | 'revisao_pei';
+  summary: string;
+  recommendations: string;
+  nextFollowUpDate?: string;
+}
+
+export interface PsychopedagogicalCase {
+  id: string;
+  caseCode: string;
+  institutionId: string;
+  institutionName: string;
+  studentId?: string;
+  studentName: string;
+  studentProcessNumber?: string;
+  gradeLevel: string;
+  className?: string;
+  category: PsychopedagogicalCategory;
+  priority: PsychopedagogicalPriority;
+  status: PsychopedagogicalStatus;
+  referralSource: 'direccao' | 'professor' | 'encarregado' | 'super_admin';
+  specialistAssigned: string;
+  guardianConsent: boolean;
+  guardianName?: string;
+  summaryNotes: string;
+  peiObjectives: string;
+  protocolId?: string;
+  openedAt: string;
+  updatedAt: string;
+  sessions: PsychopedagogicalSession[];
+}
+
 

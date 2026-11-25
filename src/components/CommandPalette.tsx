@@ -24,7 +24,8 @@ import {
   ChevronRight,
   Award,
   FolderArchive,
-  Megaphone
+  Megaphone,
+  HeartHandshake
 } from 'lucide-react';
 import { Institution, Student, ClassRoom, Teacher, Invoice, UserProfile, UserRole } from '../types';
 import { formatKwanza } from '../utils/currency';
@@ -685,6 +686,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     : isSuperAdminMode
     ? [
         { title: 'Instituições & Administradores', tab: 'super_institutions', desc: 'Gestão global das escolas, limites e administradores', icon: <Building2 className="w-4 h-4 text-purple-400" /> },
+        { title: 'Acompanhamento Psicopedagógico & Escolas', tab: 'super_psychopedagogical', desc: 'Protocolos INEE/MED, casos e activação nas escolas', icon: <HeartHandshake className="w-4 h-4 text-emerald-500" /> },
         { title: 'Planos de Subscrição SaaS', tab: 'super_subscriptions', desc: 'Gestão de licenças e planos institucionais', icon: <ShieldCheck className="w-4 h-4 text-sky-400" /> },
         { title: 'Comunicações às Escolas', tab: 'super_communications', desc: 'Enviar comunicados e circulares aos administradores escolares', icon: <Megaphone className="w-4 h-4 text-emerald-500" /> },
         { title: '11 Subsistemas de Angola', tab: 'super_curriculum', desc: 'Base de dados curricular oficial INIDE/MED', icon: <BookOpen className="w-4 h-4 text-emerald-400" /> },
@@ -712,6 +714,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         { title: 'Explorador Curricular dos 11 Subsistemas', tab: 'curriculum_explorer', desc: 'Planos curriculares oficiais de Angola', icon: <BookOpen className="w-4 h-4 text-purple-400" /> },
         { title: 'Estatísticas & Relatórios Oficiais', tab: 'reports', desc: 'Rácios de género, aprovação e receitas AOA', icon: <Layers className="w-4 h-4 text-teal-400" /> },
         { title: 'Módulos Especializados (Creche, PEI, Ensino Superior)', tab: 'specialized_subsystems', desc: 'Fichas de creche, PEI e créditos universitários', icon: <GraduationCap className="w-4 h-4 text-indigo-400" /> },
+        ...(currentInstitution?.features?.psychopedagogicalSupport
+          ? [{ title: 'Acompanhamento Psicopedagógico & NEE', tab: 'psychopedagogical', desc: 'Triagens, sessões de acompanhamento e PEI', icon: <HeartHandshake className="w-4 h-4 text-emerald-500" /> }]
+          : []),
         { title: 'Estrutura Supabase PostgreSQL & RLS', tab: 'super_supabase_sql', desc: '35+ tabelas relacionais com segurança por instituição', icon: <ShieldCheck className="w-4 h-4 text-emerald-400" /> }
       ];
 

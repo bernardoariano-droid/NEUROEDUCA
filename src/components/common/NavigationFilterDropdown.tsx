@@ -36,7 +36,8 @@ import {
   RotateCcw,
   CheckCircle2,
   Calendar,
-  Megaphone
+  Megaphone,
+  HeartHandshake
 } from 'lucide-react';
 import {
   Institution,
@@ -1234,6 +1235,18 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
           icon: <Megaphone className="w-4 h-4 text-emerald-600" />,
           keywords: 'comunicados comunicacoes avisos circulares escolas',
           payload: { tab: 'super_communications' }
+        },
+        {
+          id: 'sa-feat-psycho',
+          functionalityId: 'instituicoes_escolas',
+          sectionLabel: 'Acompanhamento Psicopedagógico & Inclusão',
+          title: 'Acompanhamento Psicopedagógico & Activação de Escolas',
+          subtitle: 'Configurar protocolos INEE/MED, casos e activar o módulo por escola',
+          badge: 'Psicopedagogia',
+          badgeTone: 'emerald',
+          icon: <HeartHandshake className="w-4 h-4 text-emerald-600" />,
+          keywords: 'psicopedagogico psicopedagogia nee pei inclusao activar escolas',
+          payload: { tab: 'super_psychopedagogical' }
         },
         {
           id: 'sa-feat-curr',

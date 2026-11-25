@@ -20,7 +20,9 @@ import {
   DigitalArchiveDocument,
   AttendanceRecord,
   FinancialNotification,
-  Announcement
+  Announcement,
+  PsychopedagogicalProtocol,
+  PsychopedagogicalCase
 } from '../types';
 
 import {
@@ -36,7 +38,9 @@ import {
   INITIAL_DIGITAL_ARCHIVE,
   INITIAL_ATTENDANCE,
   INITIAL_FINANCIAL_NOTIFICATIONS,
-  INITIAL_ANNOUNCEMENTS
+  INITIAL_ANNOUNCEMENTS,
+  INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS,
+  INITIAL_PSYCHOPEDAGOGICAL_CASES
 } from '../data/initialData';
 
 // Chaves padronizadas de armazenamento local (LocalStorage)
@@ -56,6 +60,8 @@ export const STORAGE_KEYS = {
   ATTENDANCE: 'neuroeduca_attendance',
   FINANCIAL_NOTIFICATIONS: 'neuroeduca_financial_notifications',
   ANNOUNCEMENTS: 'neuroeduca_announcements',
+  PSYCHOPEDAGOGICAL_PROTOCOLS: 'neuroeduca_psychopedagogical_protocols',
+  PSYCHOPEDAGOGICAL_CASES: 'neuroeduca_psychopedagogical_cases',
   SUPABASE_CONFIG: 'neuroeduca_supabase_config',
   LAST_SYNC: 'neuroeduca_last_sync_timestamp',
   STORAGE_VERSION: 'neuroeduca_storage_version'
@@ -182,6 +188,8 @@ export interface StorageDataBundle {
   attendance?: AttendanceRecord[];
   financialNotifications?: FinancialNotification[];
   announcements?: Announcement[];
+  psychopedagogicalProtocols?: PsychopedagogicalProtocol[];
+  psychopedagogicalCases?: PsychopedagogicalCase[];
   version?: string;
   exportedAt?: string;
   updatedAt?: string;
@@ -305,7 +313,9 @@ class StorageService {
         digitalArchive: INITIAL_DIGITAL_ARCHIVE,
         attendance: INITIAL_ATTENDANCE,
         financialNotifications: INITIAL_FINANCIAL_NOTIFICATIONS,
-        announcements: INITIAL_ANNOUNCEMENTS
+        announcements: INITIAL_ANNOUNCEMENTS,
+        psychopedagogicalProtocols: INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS,
+        psychopedagogicalCases: INITIAL_PSYCHOPEDAGOGICAL_CASES
       };
     }
 
@@ -330,6 +340,14 @@ class StorageService {
       []
     );
     let announcements = this.getItem<Announcement[]>(STORAGE_KEYS.ANNOUNCEMENTS, []);
+    let psychopedagogicalProtocols = this.getItem<PsychopedagogicalProtocol[]>(
+      STORAGE_KEYS.PSYCHOPEDAGOGICAL_PROTOCOLS,
+      []
+    );
+    let psychopedagogicalCases = this.getItem<PsychopedagogicalCase[]>(
+      STORAGE_KEYS.PSYCHOPEDAGOGICAL_CASES,
+      []
+    );
 
     const isFirstRun = institutions.length === 0;
 
@@ -349,6 +367,8 @@ class StorageService {
       attendance = INITIAL_ATTENDANCE;
       financialNotifications = INITIAL_FINANCIAL_NOTIFICATIONS;
       announcements = INITIAL_ANNOUNCEMENTS;
+      psychopedagogicalProtocols = INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS;
+      psychopedagogicalCases = INITIAL_PSYCHOPEDAGOGICAL_CASES;
 
       this.saveAll({
         institutions,
@@ -365,11 +385,13 @@ class StorageService {
         digitalArchive,
         attendance,
         financialNotifications,
-        announcements
+        announcements,
+        psychopedagogicalProtocols,
+        psychopedagogicalCases
       });
       localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, CURRENT_STORAGE_VERSION);
     } else {
-      // Garantir que schoolUsers, accounts, digitalArchive, attendance, notificações e comunicados estão sempre inicializados e persistidos
+      // Garantir que schoolUsers, accounts, digitalArchive, attendance, notificações, comunicados e psicopedagogia estão inicializados e persistidos
       if (schoolUsers.length === 0) {
         schoolUsers = INITIAL_SCHOOL_USERS;
         this.saveSchoolUsers(schoolUsers);
@@ -395,6 +417,20 @@ class StorageService {
       ) {
         announcements = INITIAL_ANNOUNCEMENTS;
         this.saveAnnouncements(announcements);
+      }
+      if (
+        psychopedagogicalProtocols.length === 0 &&
+        !localStorage.getItem(STORAGE_KEYS.PSYCHOPEDAGOGICAL_PROTOCOLS)
+      ) {
+        psychopedagogicalProtocols = INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS;
+        this.savePsychopedagogicalProtocols(psychopedagogicalProtocols);
+      }
+      if (
+        psychopedagogicalCases.length === 0 &&
+        !localStorage.getItem(STORAGE_KEYS.PSYCHOPEDAGOGICAL_CASES)
+      ) {
+        psychopedagogicalCases = INITIAL_PSYCHOPEDAGOGICAL_CASES;
+        this.savePsychopedagogicalCases(psychopedagogicalCases);
       }
       this.saveAccounts(accounts);
       if (savedVersion !== CURRENT_STORAGE_VERSION) {
@@ -452,6 +488,8 @@ class StorageService {
       attendance,
       financialNotifications,
       announcements,
+      psychopedagogicalProtocols,
+      psychopedagogicalCases,
       version: CURRENT_STORAGE_VERSION,
       updatedAt: localStorage.getItem(STORAGE_KEYS.LAST_SYNC) || undefined
     };
@@ -529,6 +567,14 @@ class StorageService {
 
   public saveAnnouncements(items: Announcement[]): void {
     this.setItem(STORAGE_KEYS.ANNOUNCEMENTS, items);
+  }
+
+  public savePsychopedagogicalProtocols(items: PsychopedagogicalProtocol[]): void {
+    this.setItem(STORAGE_KEYS.PSYCHOPEDAGOGICAL_PROTOCOLS, items);
+  }
+
+  public savePsychopedagogicalCases(items: PsychopedagogicalCase[]): void {
+    this.setItem(STORAGE_KEYS.PSYCHOPEDAGOGICAL_CASES, items);
   }
 
   // Gestão Unificada de Credenciais & Permissões (Login/Cadastro)
@@ -614,6 +660,12 @@ class StorageService {
     if (data.attendance) this.saveAttendance(data.attendance);
     if (data.financialNotifications) this.saveFinancialNotifications(data.financialNotifications);
     if (data.announcements) this.saveAnnouncements(data.announcements);
+    if (data.psychopedagogicalProtocols) {
+      this.savePsychopedagogicalProtocols(data.psychopedagogicalProtocols);
+    }
+    if (data.psychopedagogicalCases) {
+      this.savePsychopedagogicalCases(data.psychopedagogicalCases);
+    }
     if (typeof window !== 'undefined') {
       const targetTs =
         options?.preserveUpdatedAt && !Number.isNaN(Date.parse(options.preserveUpdatedAt))
@@ -706,6 +758,8 @@ class StorageService {
       attendance: INITIAL_ATTENDANCE,
       financialNotifications: INITIAL_FINANCIAL_NOTIFICATIONS,
       announcements: INITIAL_ANNOUNCEMENTS,
+      psychopedagogicalProtocols: INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS,
+      psychopedagogicalCases: INITIAL_PSYCHOPEDAGOGICAL_CASES,
       version: CURRENT_STORAGE_VERSION,
       exportedAt: new Date().toISOString()
     };

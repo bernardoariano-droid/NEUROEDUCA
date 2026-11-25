@@ -110,7 +110,8 @@ export const SchoolSettings: React.FC<SchoolSettingsProps> = ({
     officialDocuments: true,
     massEnrollment: true,
     specializedModules: true,
-    reportsAndAnalytics: true
+    reportsAndAnalytics: true,
+    psychopedagogicalSupport: false
   };
 
   return (
@@ -561,6 +562,12 @@ export const SchoolSettings: React.FC<SchoolSettingsProps> = ({
                 <div className={`p-2.5 rounded-xl border flex items-center space-x-2 ${features.reportsAndAnalytics ? 'bg-[#eaf6ee] border-[#cde6d5] text-[#055827]' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
                   <CheckCircle2 className="w-4 h-4 shrink-0" />
                   <span className="font-medium">Relatórios Estatísticos Avançados</span>
+                </div>
+                <div className={`p-2.5 rounded-xl border flex items-center space-x-2 ${features.psychopedagogicalSupport ? 'bg-[#eaf6ee] border-[#cde6d5] text-[#055827]' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span className="font-medium">
+                    Acompanhamento Psicopedagógico &amp; NEE {!features.psychopedagogicalSupport && '(Por Activar)'}
+                  </span>
                 </div>
               </div>
             </div>

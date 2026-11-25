@@ -20,7 +20,9 @@ import {
   DigitalArchiveDocument,
   AttendanceRecord,
   FinancialNotification,
-  Announcement
+  Announcement,
+  PsychopedagogicalProtocol,
+  PsychopedagogicalCase
 } from '../types';
 
 export const INITIAL_SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
@@ -107,6 +109,7 @@ export const INITIAL_INSTITUTIONS: Institution[] = [
       massEnrollment: true,
       specializedModules: true,
       reportsAndAnalytics: true,
+      psychopedagogicalSupport: false,
     },
     status: 'active',
     maxClasses: 30,
@@ -2021,6 +2024,228 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
     readByUserKeys: []
   }
 ];
+
+export const INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS: PsychopedagogicalProtocol[] = [
+  {
+    id: 'prot-nee-01',
+    code: 'PROT-INEE-01',
+    title: 'Protocolo de Triagem & Plano Educativo Individual (NEE / Inclusão)',
+    category: 'nee_inclusao',
+    targetSubsystems: ['pre_escolar', 'primario_geral', 'especial', 'secundario_geral_1'],
+    description:
+      'Enquadramento oficial para identificação precoce de Necessidades Educativas Especiais, adaptação curricular e elaboração do Plano Educativo Individual (PEI) conforme directrizes do INEE / MED.',
+    screeningCriteria: [
+      'Atraso persistente na aquisição da leitura, escrita ou cálculo face à classe frequentada',
+      'Comunicação verbal ou motora condicionada com impacto na participação em aula',
+      'Parecer clínico ou relatório anterior de Educação Especial anexado ao processo'
+    ],
+    interventionSteps: [
+      'Entrevista inicial com o Encarregado de Educação e recolha de autorização formal',
+      'Avaliação psicopedagógica multidisciplinar em coordenação com o Director de Turma',
+      'Elaboração e homologação do PEI com metas trimestrais adaptadas',
+      'Acompanhamento quinzenal e revisão no final de cada trimestre lectivo'
+    ],
+    normativeReference: 'Lei de Bases 17/16 · Estatuto da Educação Especial (INEE / MED)',
+    isActive: true,
+    updatedAt: '2026-11-15'
+  },
+  {
+    id: 'prot-apr-02',
+    code: 'PROT-APR-02',
+    title: 'Intervenção em Dificuldades de Aprendizagem (Dislexia, Discalculia & Défice de Atenção)',
+    category: 'dificuldade_aprendizagem',
+    targetSubsystems: ['primario_geral', 'secundario_geral_1', 'secundario_geral_2'],
+    description:
+      'Metodologia estruturada de apoio pedagógico diferenciado para estudantes com dificuldades específicas de leitura, escrita, raciocínio lógico-matemático ou atenção.',
+    screeningCriteria: [
+      'Média Trimestral (MT) recorrentemente abaixo da nota mínima em Língua Portuguesa ou Matemática',
+      'Troca sistemática de grafemas, leitura silabada prolongada ou desorganização espacial nos cadernos',
+      'Sinalização por dois ou mais professores da turma durante as avaliações contínuas (AC1-AC3)'
+    ],
+    interventionSteps: [
+      'Aplicação de ficha de despiste psicopedagógico e análise dos cadernos escolares',
+      'Definição de adaptações de avaliação (tempo adicional, enunciados segmentados, apoio oral)',
+      'Sessões semanais de reforço cognitivo-pedagógico e orientação aos pais',
+      'Monitorização da evolução entre AC1, AC2, AC3 e Prova Trimestral'
+    ],
+    normativeReference: 'Directiva Pedagógica INIDE — Apoio Diferenciado e Recuperação',
+    isActive: true,
+    updatedAt: '2026-11-12'
+  },
+  {
+    id: 'prot-emo-03',
+    code: 'PROT-EMO-03',
+    title: 'Acolhimento Socioemocional, Prevenção do Abandono & Assiduidade',
+    category: 'apoio_emocional',
+    targetSubsystems: ['primario_geral', 'secundario_geral_1', 'secundario_geral_2', 'tecnico_2'],
+    description:
+      'Protocolo de escuta activa, mediação familiar e apoio psicossocial para alunos em situação de vulnerabilidade emocional, luto, ansiedade escolar ou risco de desistência.',
+    screeningCriteria: [
+      'Mais de 5 faltas não justificadas consecutivas ou queda abrupta de assiduidade',
+      'Isolamento social repentino, choro frequente, fadiga extrema ou recusa escolar',
+      'Mudança drástica no rendimento académico associada a factores familiares ou económicos'
+    ],
+    interventionSteps: [
+      'Contacto imediato e confidencial com o Encarregado de Educação',
+      'Sessão individual de acolhimento com psicopedagogo ou orientador escolar',
+      'Plano de reintegração gradual em sala de aula com apoio do Director de Turma',
+      'Encaminhamento para serviços comunitários de saúde ou acção social quando necessário'
+    ],
+    normativeReference: 'Programa Nacional de Protecção Escolar e Prevenção do Abandono',
+    isActive: true,
+    updatedAt: '2026-11-18'
+  },
+  {
+    id: 'prot-voc-04',
+    code: 'PROT-VOC-04',
+    title: 'Orientação Vocacional, Projecto de Vida & Altas Habilidades',
+    category: 'orientacao_vocacional',
+    targetSubsystems: ['secundario_geral_1', 'secundario_geral_2', 'tecnico_1', 'tecnico_2', 'pedagogico'],
+    description:
+      'Acompanhamento de transição para escolha de área/curso no II Ciclo, Ensino Técnico-Profissional ou Ensino Superior, bem como enriquecimento curricular para alunos sobredotados.',
+    screeningCriteria: [
+      'Estudantes da 9.ª ou 12.ª Classe em fase de transição de ciclo ou candidatura',
+      'Dúvida vocacional expressa pelo estudante ou discrepância entre aptidões e curso actual',
+      'Desempenho excepcional contínuo com necessidade de desafios académicos avançados'
+    ],
+    interventionSteps: [
+      'Aplicação de inventário de interesses profissionais e análise do histórico académico',
+      'Sessão de aconselhamento vocacional individual ou em pequeno grupo',
+      'Reunião de alinhamento com o Encarregado de Educação sobre percursos formativos em Angola'
+    ],
+    normativeReference: 'Directriz MED — Orientação Escolar e Profissional no Ensino Secundário',
+    isActive: true,
+    updatedAt: '2026-11-10'
+  }
+];
+
+export const INITIAL_PSYCHOPEDAGOGICAL_CASES: PsychopedagogicalCase[] = [
+  {
+    id: 'psy-case-01',
+    caseCode: 'PSI-2026-001',
+    institutionId: 'inst-01',
+    institutionName: 'Complexo Escolar Sagrada Esperança',
+    studentId: 'stu-01',
+    studentName: 'Kizua Manuel Domingos',
+    studentProcessNumber: 'PROC-2026-001',
+    gradeLevel: '6.ª Classe',
+    className: '6ª Classe A',
+    category: 'dificuldade_aprendizagem',
+    priority: 'moderado',
+    status: 'em_acompanhamento',
+    referralSource: 'professor',
+    specialistAssigned: 'Dra. Beatriz Ngola (Psicopedagoga)',
+    guardianConsent: true,
+    guardianName: 'Dra. Francisca Paulo Kizua',
+    summaryNotes:
+      'Sinalização docente por fadiga atencional em Matemática e interpretação de enunciados extensos durante as provas contínuas.',
+    peiObjectives:
+      'Segmentar enunciados de avaliação em passos curtos; disponibilizar +15 minutos nas provas escritas; reforço semanal de leitura compreensiva.',
+    protocolId: 'prot-apr-02',
+    openedAt: '2026-11-04',
+    updatedAt: '2026-11-19',
+    sessions: [
+      {
+        id: 'sess-01',
+        date: '2026-11-06',
+        specialistName: 'Dra. Beatriz Ngola',
+        sessionType: 'triagem_inicial',
+        summary:
+          'Entrevista inicial com o aluno e contacto telefónico com a encarregada. Boa motivação geral, dificuldade focada em organização temporal.',
+        recommendations:
+          'Introduzir lista de verificação visual nas tarefas de casa e lugar na primeira fila da sala.',
+        nextFollowUpDate: '2026-11-20'
+      },
+      {
+        id: 'sess-02',
+        date: '2026-11-19',
+        specialistName: 'Dra. Beatriz Ngola',
+        sessionType: 'reuniao_familia',
+        summary:
+          'Alinhamento presencial com a encarregada de educação e validação do plano de apoio trimestral.',
+        recommendations:
+          'Manter rotina de 30 minutos diários de leitura acompanhada e revisão antes da NPT.',
+        nextFollowUpDate: '2026-12-03'
+      }
+    ]
+  },
+  {
+    id: 'psy-case-02',
+    caseCode: 'PSI-2026-002',
+    institutionId: 'inst-01',
+    institutionName: 'Complexo Escolar Sagrada Esperança',
+    studentId: 'stu-02',
+    studentName: 'Carlos Alberto Muangala',
+    studentProcessNumber: 'PROC-2026-002',
+    gradeLevel: '10.ª Classe',
+    className: '10ª Classe CFB',
+    category: 'apoio_emocional',
+    priority: 'elevado',
+    status: 'em_triagem',
+    referralSource: 'direccao',
+    specialistAssigned: 'Dr. Hélder Chipopa (Psicólogo Escolar)',
+    guardianConsent: false,
+    guardianName: 'Sr. Alberto Muangala',
+    summaryNotes:
+      'Registo preventivo por 4 faltas seguidas no início do mês e retracção acentuada nas aulas de grupo. Aguarda activação do módulo na escola para abertura formal do gabinete local.',
+    peiObjectives:
+      'Estabelecer vínculo de acolhimento e verificar factores familiares/emocionais em articulação com o encarregado.',
+    protocolId: 'prot-emo-03',
+    openedAt: '2026-11-16',
+    updatedAt: '2026-11-20',
+    sessions: [
+      {
+        id: 'sess-03',
+        date: '2026-11-18',
+        specialistName: 'Dr. Hélder Chipopa',
+        sessionType: 'observacao_turma',
+        summary:
+          'Observação discreta em contexto de sala de aula e conversa prévia com o Director de Turma para preparar contacto familiar.',
+        recommendations:
+          'Agendar reunião reservada com o encarregado de educação para recolha de consentimento e escuta.',
+        nextFollowUpDate: '2026-11-26'
+      }
+    ]
+  },
+  {
+    id: 'psy-case-03',
+    caseCode: 'PSI-2026-003',
+    institutionId: 'inst-03',
+    institutionName: 'Centro Infantil e Colégio Os Pestinhas do Saber',
+    studentName: 'Luana Esperança Chitunda',
+    studentProcessNumber: 'PROC-2026-118',
+    gradeLevel: 'Iniciação (5 anos)',
+    className: 'Sala Arco-Íris',
+    category: 'nee_inclusao',
+    priority: 'moderado',
+    status: 'pei_activo',
+    referralSource: 'encarregado',
+    specialistAssigned: 'Dra. Esperança Chipenda / Coord. INEE',
+    guardianConsent: true,
+    guardianName: 'Sra. Mariana Chitunda',
+    summaryNotes:
+      'Acompanhamento de estimulação da linguagem expressiva e motricidade fina em contexto de educação pré-escolar inclusiva.',
+    peiObjectives:
+      'Actividades lúdico-sensoriais diárias com pictogramas; trabalho em pares orientados; relatório descritivo mensal à família.',
+    protocolId: 'prot-nee-01',
+    openedAt: '2026-10-28',
+    updatedAt: '2026-11-17',
+    sessions: [
+      {
+        id: 'sess-04',
+        date: '2026-11-10',
+        specialistName: 'Coord. INEE',
+        sessionType: 'revisao_pei',
+        summary:
+          'Boa resposta ao uso de cartões visuais de rotina; aumento visível da interacção com os colegas durante o recreio orientado.',
+        recommendations:
+          'Continuar exercícios de coordenação motora fina e partilhar guia lúdico com a família.',
+        nextFollowUpDate: '2026-12-01'
+      }
+    ]
+  }
+];
+
 
 
 

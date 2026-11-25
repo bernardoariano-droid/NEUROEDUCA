@@ -31,7 +31,8 @@ import {
   Smartphone,
   FolderArchive,
   Headphones,
-  Megaphone
+  Megaphone,
+  HeartHandshake
 } from 'lucide-react';
 import { Institution, UserRole, UserProfile } from '../types';
 
@@ -191,6 +192,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="flex items-center gap-3 min-w-0">
                   <Megaphone className={iconClass(currentTab === 'super_communications')} />
                   <span className="truncate">Comunicações</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handleTabClick('super_psychopedagogical')}
+                className={navItemClass(currentTab === 'super_psychopedagogical')}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <HeartHandshake className={iconClass(currentTab === 'super_psychopedagogical')} />
+                  <span className="truncate">Psicopedagogia &amp; Inclusão</span>
                 </div>
               </button>
 
@@ -677,6 +688,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <span className="truncate">Assistente Pedagógico</span>
                 </div>
               </button>
+
+              {Boolean(currentInstitution?.features?.psychopedagogicalSupport) && (
+                <button
+                  onClick={() => handleTabClick('psychopedagogical')}
+                  className={navItemClass(currentTab === 'psychopedagogical')}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <HeartHandshake className={iconClass(currentTab === 'psychopedagogical')} />
+                    <span className="truncate">Psicopedagogia &amp; NEE</span>
+                  </div>
+                </button>
+              )}
 
               {onOpenMemoryModal && (
                 <button

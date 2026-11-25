@@ -14,6 +14,7 @@ import { SubscriptionPlans } from './components/SuperAdmin/SubscriptionPlans';
 import { CurriculumDatabaseViewer } from './components/SuperAdmin/CurriculumDatabaseViewer';
 import { SupabaseSqlViewer } from './components/SuperAdmin/SupabaseSqlViewer';
 import { AuditLogViewer } from './components/SuperAdmin/AuditLogViewer';
+import { PsychopedagogicalManager } from './components/SuperAdmin/PsychopedagogicalManager';
 import { NavDeepLinkPayload } from './components/common/NavigationFilterDropdown';
 
 import { InstitutionDashboard } from './components/Academic/InstitutionDashboard';
@@ -96,7 +97,12 @@ import {
   JustificationSource,
   FinancialNotification,
   FinancialNotificationTarget,
-  Announcement
+  Announcement,
+  DEFAULT_INSTITUTION_FEATURES,
+  PsychopedagogicalProtocol,
+  PsychopedagogicalCase,
+  PsychopedagogicalSession,
+  PsychopedagogicalInstitutionConfig
 } from './types';
 
 function getInitialUser(): UserProfile | null {
@@ -174,6 +180,12 @@ export default function App() {
   const [announcements, setAnnouncements] = useState<Announcement[]>(
     initialData.announcements || []
   );
+  const [psychopedagogicalProtocols, setPsychopedagogicalProtocols] = useState<
+    PsychopedagogicalProtocol[]
+  >(initialData.psychopedagogicalProtocols || []);
+  const [psychopedagogicalCases, setPsychopedagogicalCases] = useState<
+    PsychopedagogicalCase[]
+  >(initialData.psychopedagogicalCases || []);
 
   const [currentTab, setCurrentTab] = useState<string>(() =>
     getDefaultTabForRole(
@@ -334,6 +346,7 @@ export default function App() {
         'super_users',
         'super_subscriptions',
         'super_communications',
+        'super_psychopedagogical',
         'super_curriculum',
         'super_supabase_sql',
         'super_audit'
@@ -389,6 +402,7 @@ export default function App() {
         'communications',
         'reports',
         'pedagogical_ai',
+        ...(currentInstitution?.features?.psychopedagogicalSupport ? ['psychopedagogical'] : []),
         'super_supabase_sql'
       ];
       if (!allowedSchoolAdminTabs.includes(currentTab)) {
@@ -489,6 +503,12 @@ export default function App() {
       if (Array.isArray(data.announcements)) {
         setAnnouncements(data.announcements);
       }
+      if (Array.isArray(data.psychopedagogicalProtocols)) {
+        setPsychopedagogicalProtocols(data.psychopedagogicalProtocols);
+      }
+      if (Array.isArray(data.psychopedagogicalCases)) {
+        setPsychopedagogicalCases(data.psychopedagogicalCases);
+      }
       storageService.saveAll(data, { preserveUpdatedAt: sourceUpdatedAt || data.updatedAt });
     };
 
@@ -572,7 +592,10 @@ export default function App() {
       digitalArchive: newData.digitalArchive || digitalArchive,
       attendance: newData.attendance || attendanceRecords,
       financialNotifications: newData.financialNotifications || financialNotifications,
-      announcements: newData.announcements || announcements
+      announcements: newData.announcements || announcements,
+      psychopedagogicalProtocols:
+        newData.psychopedagogicalProtocols || psychopedagogicalProtocols,
+      psychopedagogicalCases: newData.psychopedagogicalCases || psychopedagogicalCases
     };
 
     fetch('/api/sync', {
@@ -599,7 +622,9 @@ export default function App() {
       digitalArchive,
       attendance: attendanceRecords,
       financialNotifications,
-      announcements
+      announcements,
+      psychopedagogicalProtocols,
+      psychopedagogicalCases
     });
   };
 
@@ -619,6 +644,8 @@ export default function App() {
     setAttendanceRecords(bundle.attendance || []);
     setFinancialNotifications(bundle.financialNotifications || []);
     setAnnouncements(bundle.announcements || []);
+    setPsychopedagogicalProtocols(bundle.psychopedagogicalProtocols || []);
+    setPsychopedagogicalCases(bundle.psychopedagogicalCases || []);
     if (
       bundle.institutions.length > 0 &&
       currentUser?.role !== 'super_admin' &&
@@ -646,6 +673,12 @@ export default function App() {
       bundle.financialNotifications || initialData.financialNotifications || []
     );
     setAnnouncements(bundle.announcements || initialData.announcements || []);
+    setPsychopedagogicalProtocols(
+      bundle.psychopedagogicalProtocols || initialData.psychopedagogicalProtocols || []
+    );
+    setPsychopedagogicalCases(
+      bundle.psychopedagogicalCases || initialData.psychopedagogicalCases || []
+    );
     if (
       bundle.institutions.length > 0 &&
       currentUser?.role !== 'super_admin' &&
@@ -1126,6 +1159,206 @@ export default function App() {
     );
     setInstitutions(updated);
     persistState({ institutions: updated });
+  };
+
+  // Handlers de Acompanhamento Psicopedagógico & Activação por Escola (Super Admin)
+  const handleToggleInstitutionPsychopedagogical = (
+    institutionId: string,
+    activate: boolean,
+    config?: PsychopedagogicalInstitutionConfig
+  ) => {
+    if (!isSuperAdminRole) return;
+    const targetInst = institutions.find((i) => i.id === institutionId);
+    if (!targetInst) return;
+
+    const updatedInstitutions = institutions.map((inst) => {
+      if (inst.id !== institutionId) return inst;
+      const mergedFeatures = {
+        ...DEFAULT_INSTITUTION_FEATURES,
+        ...(inst.features || {}),
+        psychopedagogicalSupport: activate
+      };
+      const mergedConfig: PsychopedagogicalInstitutionConfig = {
+        ...(inst.psychopedagogicalConfig || {}),
+        ...(config || {}),
+        activatedAt: activate
+          ? config?.activatedAt ||
+            inst.psychopedagogicalConfig?.activatedAt ||
+            new Date().toISOString().split('T')[0]
+          : config?.activatedAt ?? inst.psychopedagogicalConfig?.activatedAt,
+        activatedBy: activate
+          ? config?.activatedBy || currentUser?.fullName || 'Super Administrador'
+          : config?.activatedBy ?? inst.psychopedagogicalConfig?.activatedBy
+      };
+      return {
+        ...inst,
+        features: mergedFeatures,
+        psychopedagogicalConfig: mergedConfig
+      };
+    });
+
+    setInstitutions(updatedInstitutions);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: targetInst.id,
+      institutionName: targetInst.name,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: activate
+        ? 'ACTIVAR_PSICOPEDAGOGICO_ESCOLA'
+        : 'DESACTIVAR_PSICOPEDAGOGICO_ESCOLA',
+      details: `${
+        activate ? 'Activação' : 'Desactivação/Pré-configuração'
+      } do módulo de Acompanhamento Psicopedagógico para "${targetInst.name}".`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({ institutions: updatedInstitutions, auditLogs: updatedLogs });
+  };
+
+  const handleBatchTogglePsychopedagogical = (institutionIds: string[], activate: boolean) => {
+    if (!isSuperAdminRole || institutionIds.length === 0) return;
+    const idSet = new Set(institutionIds);
+    const today = new Date().toISOString().split('T')[0];
+
+    const updatedInstitutions = institutions.map((inst) => {
+      if (!idSet.has(inst.id)) return inst;
+      return {
+        ...inst,
+        features: {
+          ...DEFAULT_INSTITUTION_FEATURES,
+          ...(inst.features || {}),
+          psychopedagogicalSupport: activate
+        },
+        psychopedagogicalConfig: {
+          ...(inst.psychopedagogicalConfig || {}),
+          activatedAt: activate ? today : inst.psychopedagogicalConfig?.activatedAt,
+          activatedBy: activate
+            ? currentUser?.fullName || 'Super Administrador'
+            : inst.psychopedagogicalConfig?.activatedBy
+        }
+      };
+    });
+
+    setInstitutions(updatedInstitutions);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: activate
+        ? 'ACTIVACAO_LOTE_PSICOPEDAGOGICO'
+        : 'DESACTIVACAO_LOTE_PSICOPEDAGOGICO',
+      details: `${
+        activate ? 'Activação' : 'Desactivação'
+      } em lote do módulo de Acompanhamento Psicopedagógico em ${institutionIds.length} instituição(ões).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({ institutions: updatedInstitutions, auditLogs: updatedLogs });
+  };
+
+  const handleSavePsychopedagogicalProtocol = (protocol: PsychopedagogicalProtocol) => {
+    if (!isSuperAdminRole) return;
+    const exists = psychopedagogicalProtocols.some((p) => p.id === protocol.id);
+    const updatedProtocols = exists
+      ? psychopedagogicalProtocols.map((p) => (p.id === protocol.id ? protocol : p))
+      : [protocol, ...psychopedagogicalProtocols];
+    setPsychopedagogicalProtocols(updatedProtocols);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: 'PROTOCOLO_PSICOPEDAGOGICO',
+      details: `${exists ? 'Actualização' : 'Criação'} do protocolo psicopedagógico ${protocol.code} (${protocol.title}).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({ psychopedagogicalProtocols: updatedProtocols, auditLogs: updatedLogs });
+  };
+
+  const handleSavePsychopedagogicalCase = (caseItem: PsychopedagogicalCase) => {
+    if (
+      !isSuperAdminRole &&
+      (!isSchoolAdminRole ||
+        !currentInstitution ||
+        !currentInstitution.features?.psychopedagogicalSupport ||
+        caseItem.institutionId !== currentInstitution.id)
+    ) {
+      return;
+    }
+
+    const exists = psychopedagogicalCases.some((c) => c.id === caseItem.id);
+    const updatedCases = exists
+      ? psychopedagogicalCases.map((c) => (c.id === caseItem.id ? caseItem : c))
+      : [caseItem, ...psychopedagogicalCases];
+    setPsychopedagogicalCases(updatedCases);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: caseItem.institutionId,
+      institutionName: caseItem.institutionName,
+      userName: currentUser?.fullName || 'Equipa Psicopedagógica',
+      userRole: isSuperAdminRole ? 'Super Admin' : 'Administrador Escolar',
+      action: exists ? 'ACTUALIZACAO_DOSSIE_PSICOPEDAGOGICO' : 'NOVO_DOSSIE_PSICOPEDAGOGICO',
+      details: `Dossiê ${caseItem.caseCode} (${caseItem.studentName}) registado/actualizado em ${caseItem.institutionName}.`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({ psychopedagogicalCases: updatedCases, auditLogs: updatedLogs });
+  };
+
+  const handleAddPsychopedagogicalSession = (
+    caseId: string,
+    session: PsychopedagogicalSession
+  ) => {
+    const targetCase = psychopedagogicalCases.find((c) => c.id === caseId);
+    if (!targetCase) return;
+    if (
+      !isSuperAdminRole &&
+      (!isSchoolAdminRole ||
+        !currentInstitution ||
+        !currentInstitution.features?.psychopedagogicalSupport ||
+        targetCase.institutionId !== currentInstitution.id)
+    ) {
+      return;
+    }
+
+    const updatedCases = psychopedagogicalCases.map((c) =>
+      c.id === caseId
+        ? {
+            ...c,
+            updatedAt: session.date,
+            sessions: [session, ...c.sessions]
+          }
+        : c
+    );
+    setPsychopedagogicalCases(updatedCases);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: targetCase.institutionId,
+      institutionName: targetCase.institutionName,
+      userName: session.specialistName,
+      userRole: isSuperAdminRole ? 'Super Admin' : 'Equipa Psicopedagógica',
+      action: 'SESSAO_PSICOPEDAGOGICA',
+      details: `Sessão registada no dossiê ${targetCase.caseCode} (${targetCase.studentName}).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({ psychopedagogicalCases: updatedCases, auditLogs: updatedLogs });
   };
 
   // Handlers para Matrícula em Massa e Utilizadores da Escola
@@ -2666,6 +2899,22 @@ export default function App() {
             />
           )}
 
+          {isSuperAdminRole && currentTab === 'super_psychopedagogical' && (
+            <PsychopedagogicalManager
+              mode="super_admin"
+              institutions={institutions}
+              students={students}
+              protocols={psychopedagogicalProtocols}
+              cases={psychopedagogicalCases}
+              currentUserName={currentUser?.fullName || 'Super Administrador'}
+              onToggleInstitutionActivation={handleToggleInstitutionPsychopedagogical}
+              onBatchToggleActivation={handleBatchTogglePsychopedagogical}
+              onSaveProtocol={handleSavePsychopedagogicalProtocol}
+              onSaveCase={handleSavePsychopedagogicalCase}
+              onAddSession={handleAddPsychopedagogicalSession}
+            />
+          )}
+
           {isSuperAdminRole && currentTab === 'super_curriculum' && (
             <CurriculumDatabaseViewer />
           )}
@@ -3076,6 +3325,22 @@ export default function App() {
               {(isSchoolAdminRole || isProfessorRole) && currentTab === 'pedagogical_ai' && (
                 <PedagogicalAssistant currentInstitution={currentInstitution} />
               )}
+
+              {isSchoolAdminRole &&
+                currentTab === 'psychopedagogical' &&
+                Boolean(currentInstitution.features?.psychopedagogicalSupport) && (
+                  <PsychopedagogicalManager
+                    mode="school"
+                    institutions={institutions}
+                    lockedInstitution={currentInstitution}
+                    students={students}
+                    protocols={psychopedagogicalProtocols}
+                    cases={psychopedagogicalCases}
+                    currentUserName={currentUser?.fullName || 'Direcção Pedagógica'}
+                    onSaveCase={handleSavePsychopedagogicalCase}
+                    onAddSession={handleAddPsychopedagogicalSession}
+                  />
+                )}
 
               {isSchoolAdminRole && currentTab === 'reports' && (
                 <ReportsDashboard

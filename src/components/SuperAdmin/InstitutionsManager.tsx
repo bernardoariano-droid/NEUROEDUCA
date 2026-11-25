@@ -33,7 +33,8 @@ import {
   Sparkles,
   BarChart3,
   Mail,
-  Phone
+  Phone,
+  HeartHandshake
 } from 'lucide-react';
 import {
   Institution,
@@ -171,7 +172,7 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
     setFormAdminPassword(inst.adminPassword || '123');
     setFormMaxClasses(inst.maxClasses);
     setSelectedSubsystems(inst.subsystems.length > 0 ? inst.subsystems : ['primario_geral']);
-    setFeatures(inst.features || { ...DEFAULT_INSTITUTION_FEATURES });
+    setFeatures({ ...DEFAULT_INSTITUTION_FEATURES, ...(inst.features || {}) });
     setIsModalOpen(true);
   };
 
@@ -933,6 +934,22 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
                       type="checkbox"
                       checked={features.reportsAndAnalytics}
                       onChange={() => toggleFeature('reportsAndAnalytics')}
+                      className="w-4 h-4 accent-[#067836] rounded"
+                    />
+                  </label>
+
+                  <label className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${features.psychopedagogicalSupport ? 'bg-[#eaf6ee] border-[#067836]/40 text-[#064e26]' : 'bg-[#f7fbf8] border-[#dce7df] text-[#4b6755]'}`}>
+                    <div className="flex items-center space-x-2.5">
+                      <HeartHandshake className="w-4 h-4 text-[#067836]" />
+                      <div>
+                        <span className="font-bold block">Acompanhamento Psicopedagógico &amp; NEE</span>
+                        <span className="text-[10px] text-[#4b6755]">Triagens, PEI e protocolos INEE/MED na escola</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(features.psychopedagogicalSupport)}
+                      onChange={() => toggleFeature('psychopedagogicalSupport')}
                       className="w-4 h-4 accent-[#067836] rounded"
                     />
                   </label>

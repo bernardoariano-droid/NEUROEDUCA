@@ -536,25 +536,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         {/* COLUNA ESQUERDA: MARCA, SLOGAN, BENEFÍCIOS E MENSAGEM ANGOLA */}
         <section className="w-full lg:w-[52%] flex flex-col justify-between lg:min-h-[540px]">
           <div className="pt-2 lg:pt-4">
-            {/* Marca Oficial: Capelo + Livro Aberto em Verde Esmeralda */}
+            {/* Marca Oficial NEUROEDUCA */}
             <div className="flex items-center gap-4">
-              <svg
-                viewBox="0 0 120 92"
-                className="w-20 sm:w-24 h-auto shrink-0 drop-shadow-xs"
-                aria-hidden="true"
-              >
-                {/* Capelo */}
-                <polygon points="60,8 104,25 60,42 16,25" fill="#056b30" />
-                <path d="M36 33 V46 C36 53 84 53 84 46 V33 L60 43 Z" fill="#087f39" />
-                <line x1="94" y1="29" x2="94" y2="48" stroke="#056b30" strokeWidth="3" strokeLinecap="round" />
-                <circle cx="94" cy="50" r="3" fill="#16a34a" />
-                {/* Páginas do Livro Aberto */}
-                <path d="M58 63 C42 54 22 54 10 58 C24 58 43 60 58 68 Z" fill="#18a84e" />
-                <path d="M62 63 C78 54 98 54 110 58 C96 58 77 60 62 68 Z" fill="#18a84e" />
-                <path d="M58 72 C42 63 20 64 7 69 C23 68 43 70 58 77 Z" fill="#0b863d" />
-                <path d="M62 72 C78 63 100 64 113 69 C97 68 77 70 62 77 Z" fill="#0b863d" />
-                <path d="M60 80 C43 71 21 72 8 78 L12 83 C26 77 45 77 60 85 C75 77 94 77 108 83 L112 78 C99 72 77 71 60 80 Z" fill="#045927" />
-              </svg>
+              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-white border border-[#cde6d5] shadow-sm p-2 flex items-center justify-center shrink-0">
+                <img
+                  src="/assets/aistudio/Log_NueroEduca_0d40bfa8.png"
+                  alt="Logomarca NEUROEDUCA"
+                  className="w-full h-full object-contain"
+                />
+              </div>
 
               <div>
                 <span className="font-display text-3xl sm:text-4xl lg:text-[42px] font-extrabold tracking-tight text-[#077a36] block leading-none">

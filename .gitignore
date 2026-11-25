@@ -1,8 +1,14 @@
 node_modules/
 build/
 dist/
+dist-ssr/
 coverage/
+.vercel
 .DS_Store
 *.log
+*.local
 .env*
 !.env.example
+.neuroeduca_store.json
+.neuroeduca_archive/
+

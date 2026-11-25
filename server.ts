@@ -9,6 +9,7 @@ import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
 import dotenv from 'dotenv';
 import {
   checkSupabaseTablesHealth,
@@ -46,8 +47,12 @@ if (apiKey) {
   });
 }
 
-// Arquivo de persistência local para dados do sistema
-const DATA_FILE = path.join(__dirname, '.neuroeduca_store.json');
+const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+
+// Arquivo de persistência local (no Vercel usa /tmp pois o sistema de ficheiros principal é read-only)
+const DATA_FILE = IS_VERCEL
+  ? path.join(os.tmpdir(), '.neuroeduca_store.json')
+  : path.join(__dirname, '.neuroeduca_store.json');
 
 function readStore() {
   if (fs.existsSync(DATA_FILE)) {
@@ -115,19 +120,26 @@ app.get('/api/insignia', async (_req: Request, res: Response) => {
     }
   }
 
-  const localFallback = path.join(__dirname, 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg');
-  if (fs.existsSync(localFallback)) {
-    const buffer = fs.readFileSync(localFallback);
-    cachedInsignia = { buffer, contentType: 'image/jpeg' };
-    res.setHeader('Content-Type', 'image/jpeg');
-    return res.send(buffer);
+  const localFallbackCandidates = [
+    path.join(process.cwd(), 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg'),
+    path.join(__dirname, 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg'),
+  ];
+  for (const localFallback of localFallbackCandidates) {
+    if (fs.existsSync(localFallback)) {
+      const buffer = fs.readFileSync(localFallback);
+      cachedInsignia = { buffer, contentType: 'image/jpeg' };
+      res.setHeader('Content-Type', 'image/jpeg');
+      return res.send(buffer);
+    }
   }
 
   return res.status(404).end();
 });
 
 // Diretório de armazenamento de ficheiros do Arquivo Digital Escolar
-const ARCHIVE_DIR = path.join(__dirname, '.neuroeduca_archive');
+const ARCHIVE_DIR = IS_VERCEL
+  ? path.join(os.tmpdir(), '.neuroeduca_archive')
+  : path.join(__dirname, '.neuroeduca_archive');
 
 function ensureArchiveDir() {
   if (!fs.existsSync(ARCHIVE_DIR)) {
@@ -838,4 +850,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!IS_VERCEL) {
+  startServer();
+}
+
+export { app };
+export default app;

@@ -5,7 +5,7 @@
  * Gestão de dados institucionais, direcção escolar, contactos e parâmetros
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Building2,
   Save,
@@ -66,6 +66,27 @@ export const SchoolSettings: React.FC<SchoolSettingsProps> = ({
   );
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  useEffect(() => {
+    setName(currentInstitution.name);
+    setAcronym(currentInstitution.acronym);
+    setNif(currentInstitution.nif);
+    setLicenseNumber(currentInstitution.licenseNumber);
+    setDirectorName(currentInstitution.directorName);
+    setSubdirectorPedagogico(currentInstitution.subdirectorPedagogico || 'Msc. Teresa Kiala');
+    setSecretarioGeral(currentInstitution.secretarioGeral || 'Dr. Simão Luvualu');
+    setProvince(currentInstitution.province);
+    setMunicipality(currentInstitution.municipality);
+    setAddress(currentInstitution.address);
+    setPhone(currentInstitution.phone);
+    setEmail(currentInstitution.email);
+    setPedagogicalMotto(
+      currentInstitution.pedagogicalMotto || 'Educar com Rigor, Inovação e Excelência Moral'
+    );
+    setBankName(currentInstitution.bankAccount?.bankName || 'Banco BAI');
+    setIban(currentInstitution.bankAccount?.iban || 'AO06.0040.0000.1234.5678.9012.3');
+    setMulticaixaEntity(currentInstitution.bankAccount?.multicaixaEntity || '00142');
+  }, [currentInstitution]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -361,7 +382,9 @@ export const SchoolSettings: React.FC<SchoolSettingsProps> = ({
             <span className="text-xs font-extrabold text-[#064e26] uppercase tracking-wider">
               3. LOCALIZAÇÃO GEOGRÁFICA E CANAIS DE CONTACTO (ANGOLA)
             </span>
-            <span className="text-xs text-[#4b6755] font-medium">República de Angola</span>
+            <span className="text-xs text-[#4b6755] font-medium">
+              Reflecte-se no cabeçalho de todos os documentos
+            </span>
           </div>
 
           <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">

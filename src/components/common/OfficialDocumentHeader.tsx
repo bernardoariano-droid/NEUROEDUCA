@@ -15,15 +15,139 @@ export interface DocumentHeaderConfig {
   line3: string;
   line4: string;
   line5: string;
+  isCustomized?: boolean;
 }
 
-export const DEFAULT_DOCUMENT_HEADER: DocumentHeaderConfig = {
-  line1: 'República de Angola',
-  line2: 'Ministério da Educação',
-  line3: 'Governo da Província do Cuanza-Sul',
-  line4: 'Município do Waku-Kungo',
-  line5: 'Escola Primária nº 8050 CSU - Waku-Kungo'
-};
+function normalizeLocationKey(value?: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+export function formatProvinceGovernmentLine(province?: string): string {
+  const clean = String(province || '').trim();
+  if (!clean) return 'Governo Provincial';
+  if (/^(governo|prov[ií]ncia)\b/i.test(clean)) return clean;
+
+  const key = normalizeLocationKey(clean);
+  const feminineProvinces = new Set([
+    'huila',
+    'lunda norte',
+    'lunda-norte',
+    'lunda sul',
+    'lunda-sul'
+  ]);
+  const masculineProvinces = new Set([
+    'bengo',
+    'bie',
+    'cuando',
+    'cuando cubango',
+    'cuando-cubango',
+    'cubango',
+    'cuanza norte',
+    'cuanza-norte',
+    'cuanza sul',
+    'cuanza-sul',
+    'cunene',
+    'huambo',
+    'moxico',
+    'moxico leste',
+    'moxico-leste',
+    'namibe',
+    'uige',
+    'zaire'
+  ]);
+
+  const prep = feminineProvinces.has(key)
+    ? 'da'
+    : masculineProvinces.has(key)
+    ? 'do'
+    : 'de';
+
+  return `Governo da Província ${prep} ${clean}`;
+}
+
+export function formatMunicipalityLine(municipality?: string): string {
+  const clean = String(municipality || '').trim();
+  if (!clean) return 'Município Sede';
+  if (/^(munic[ií]pio|administra[cç][aã]o municipal)\b/i.test(clean)) return clean;
+
+  const key = normalizeLocationKey(clean);
+  const feminineMunicipalities = new Set([
+    'baia farta',
+    'bibala',
+    'caala',
+    'cahama',
+    'catumbela',
+    'cela',
+    'chibia',
+    'conda',
+    'gabela',
+    'ganda',
+    'huila',
+    'humpata',
+    'jamba',
+    'quibala'
+  ]);
+  const masculineMunicipalities = new Set([
+    'ambriz',
+    'bailundo',
+    'bengo',
+    'buco-zau',
+    'buco zau',
+    'cazengo',
+    'conde',
+    'cuito',
+    'dundo',
+    'huambo',
+    'kuito',
+    'libolo',
+    'lobito',
+    'lubango',
+    'moxico',
+    'namibe',
+    'saurimo',
+    'soyo',
+    'sumbe',
+    'tombwa',
+    'uige',
+    'waku-kungo',
+    'waku kungo'
+  ]);
+
+  const prep = feminineMunicipalities.has(key)
+    ? 'da'
+    : masculineMunicipalities.has(key)
+    ? 'do'
+    : 'de';
+
+  return `Município ${prep} ${clean}`;
+}
+
+export function buildDocumentHeaderForInstitution(
+  institution?: Institution | null
+): DocumentHeaderConfig {
+  const isHigherEdOnly =
+    Array.isArray(institution?.subsystems) &&
+    institution.subsystems.length === 1 &&
+    institution.subsystems[0] === 'superior';
+
+  return {
+    line1: 'República de Angola',
+    line2: isHigherEdOnly
+      ? 'Ministério do Ensino Superior, Ciência, Tecnologia e Inovação'
+      : 'Ministério da Educação',
+    line3: formatProvinceGovernmentLine(institution?.province),
+    line4: formatMunicipalityLine(institution?.municipality),
+    line5: institution?.name?.trim() || 'Instituição de Ensino',
+    isCustomized: false
+  };
+}
+
+export const DEFAULT_DOCUMENT_HEADER: DocumentHeaderConfig = buildDocumentHeaderForInstitution(null);
 
 const HEADER_STORAGE_PREFIX = 'neuroeduca_doc_header_v1_';
 const HEADER_EVENT_NAME = 'neuroeduca-document-header-updated';
@@ -32,21 +156,34 @@ function getStorageKey(institutionId?: string): string {
   return `${HEADER_STORAGE_PREFIX}${institutionId || 'default'}`;
 }
 
-export function loadDocumentHeaderConfig(institutionId?: string): DocumentHeaderConfig {
-  if (typeof window === 'undefined') return DEFAULT_DOCUMENT_HEADER;
+export function loadDocumentHeaderConfig(
+  institutionOrId?: Institution | string | null
+): DocumentHeaderConfig {
+  const institution =
+    institutionOrId && typeof institutionOrId === 'object' ? institutionOrId : null;
+  const institutionId =
+    typeof institutionOrId === 'string' ? institutionOrId : institution?.id;
+
+  const schoolDefaults = buildDocumentHeaderForInstitution(institution);
+  if (typeof window === 'undefined') return schoolDefaults;
+
   try {
     const raw = localStorage.getItem(getStorageKey(institutionId));
-    if (!raw) return DEFAULT_DOCUMENT_HEADER;
+    if (!raw) return schoolDefaults;
     const parsed = JSON.parse(raw) as Partial<DocumentHeaderConfig>;
+    if (!parsed.isCustomized) {
+      return schoolDefaults;
+    }
     return {
-      line1: parsed.line1 ?? DEFAULT_DOCUMENT_HEADER.line1,
-      line2: parsed.line2 ?? DEFAULT_DOCUMENT_HEADER.line2,
-      line3: parsed.line3 ?? DEFAULT_DOCUMENT_HEADER.line3,
-      line4: parsed.line4 ?? DEFAULT_DOCUMENT_HEADER.line4,
-      line5: parsed.line5 ?? DEFAULT_DOCUMENT_HEADER.line5
+      line1: parsed.line1 ?? schoolDefaults.line1,
+      line2: parsed.line2 ?? schoolDefaults.line2,
+      line3: parsed.line3 ?? schoolDefaults.line3,
+      line4: parsed.line4 ?? schoolDefaults.line4,
+      line5: parsed.line5 ?? schoolDefaults.line5,
+      isCustomized: true
     };
   } catch {
-    return DEFAULT_DOCUMENT_HEADER;
+    return schoolDefaults;
   }
 }
 
@@ -56,7 +193,11 @@ export function saveDocumentHeaderConfig(
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(getStorageKey(institutionId), JSON.stringify(config));
+    if (!config.isCustomized) {
+      localStorage.removeItem(getStorageKey(institutionId));
+    } else {
+      localStorage.setItem(getStorageKey(institutionId), JSON.stringify(config));
+    }
     window.dispatchEvent(
       new CustomEvent(HEADER_EVENT_NAME, {
         detail: { institutionId: institutionId || 'default', config }
@@ -84,16 +225,26 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
 }) => {
   const instKey = institution?.id || 'default';
   const [header, setHeader] = useState<DocumentHeaderConfig>(() =>
-    loadDocumentHeaderConfig(instKey)
+    loadDocumentHeaderConfig(institution)
   );
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState<DocumentHeaderConfig>(header);
 
+  const subsystemsSig = Array.isArray(institution?.subsystems)
+    ? institution.subsystems.join(',')
+    : '';
+
   useEffect(() => {
-    const loaded = loadDocumentHeaderConfig(instKey);
+    const loaded = loadDocumentHeaderConfig(institution);
     setHeader(loaded);
     setDraft(loaded);
-  }, [instKey]);
+  }, [
+    instKey,
+    institution?.name,
+    institution?.province,
+    institution?.municipality,
+    subsystemsSig
+  ]);
 
   useEffect(() => {
     const handleSync = (event: Event) => {
@@ -102,13 +253,24 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
         config: DocumentHeaderConfig;
       }>;
       if (custom.detail?.institutionId === instKey && custom.detail?.config) {
-        setHeader(custom.detail.config);
-        setDraft(custom.detail.config);
+        const next = custom.detail.config.isCustomized
+          ? custom.detail.config
+          : buildDocumentHeaderForInstitution(institution);
+        setHeader(next);
+        setDraft(next);
       }
     };
     window.addEventListener(HEADER_EVENT_NAME, handleSync);
     return () => window.removeEventListener(HEADER_EVENT_NAME, handleSync);
-  }, [instKey]);
+  }, [
+    instKey,
+    institution?.name,
+    institution?.province,
+    institution?.municipality,
+    subsystemsSig
+  ]);
+
+  const schoolDefaults = buildDocumentHeaderForInstitution(institution);
 
   const handleOpenEdit = () => {
     setDraft(header);
@@ -118,11 +280,12 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     const cleaned: DocumentHeaderConfig = {
-      line1: draft.line1.trim() || DEFAULT_DOCUMENT_HEADER.line1,
-      line2: draft.line2.trim() || DEFAULT_DOCUMENT_HEADER.line2,
-      line3: draft.line3.trim() || DEFAULT_DOCUMENT_HEADER.line3,
-      line4: draft.line4.trim() || DEFAULT_DOCUMENT_HEADER.line4,
-      line5: draft.line5.trim() || DEFAULT_DOCUMENT_HEADER.line5
+      line1: draft.line1.trim() || schoolDefaults.line1,
+      line2: draft.line2.trim() || schoolDefaults.line2,
+      line3: draft.line3.trim() || schoolDefaults.line3,
+      line4: draft.line4.trim() || schoolDefaults.line4,
+      line5: draft.line5.trim() || schoolDefaults.line5,
+      isCustomized: true
     };
     setHeader(cleaned);
     setDraft(cleaned);
@@ -131,9 +294,10 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
   };
 
   const handleResetDefault = () => {
-    setDraft(DEFAULT_DOCUMENT_HEADER);
-    setHeader(DEFAULT_DOCUMENT_HEADER);
-    saveDocumentHeaderConfig(instKey, DEFAULT_DOCUMENT_HEADER);
+    const freshDefaults = buildDocumentHeaderForInstitution(institution);
+    setDraft(freshDefaults);
+    setHeader(freshDefaults);
+    saveDocumentHeaderConfig(instKey, freshDefaults);
   };
 
   return (
@@ -184,35 +348,35 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
               type="text"
               value={draft.line1}
               onChange={(e) => setDraft({ ...draft, line1: e.target.value })}
-              placeholder="República de Angola"
+              placeholder={schoolDefaults.line1}
               className="w-full text-center font-semibold px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900"
             />
             <input
               type="text"
               value={draft.line2}
               onChange={(e) => setDraft({ ...draft, line2: e.target.value })}
-              placeholder="Ministério da Educação"
+              placeholder={schoolDefaults.line2}
               className="w-full text-center font-semibold px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900"
             />
             <input
               type="text"
               value={draft.line3}
               onChange={(e) => setDraft({ ...draft, line3: e.target.value })}
-              placeholder="Governo da Província do Cuanza-Sul"
+              placeholder={schoolDefaults.line3}
               className="w-full text-center font-semibold px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900"
             />
             <input
               type="text"
               value={draft.line4}
               onChange={(e) => setDraft({ ...draft, line4: e.target.value })}
-              placeholder="Município do Waku-Kungo"
+              placeholder={schoolDefaults.line4}
               className="w-full text-center font-semibold px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900"
             />
             <input
               type="text"
               value={draft.line5}
               onChange={(e) => setDraft({ ...draft, line5: e.target.value })}
-              placeholder="Escola Primária nº 8050 CSU - Waku-Kungo"
+              placeholder={schoolDefaults.line5}
               className="w-full text-center font-bold px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900"
             />
           </div>
@@ -224,7 +388,7 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
               className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>Repor Padrão</span>
+              <span>Repor Dados da Escola</span>
             </button>
 
             <div className="flex items-center gap-2">

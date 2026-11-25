@@ -2272,7 +2272,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     <div className="font-mono">Proc: {selectedStudent.processNumber}</div>
                   </div>
                 </div>
-                <div>{currentInstitution.municipality}, aos {formatAngolaDate(new Date())}</div>
+                <div>
+                  {currentInstitution.municipality || currentInstitution.province || 'Angola'}
+                  {currentInstitution.municipality && currentInstitution.province
+                    ? `, ${currentInstitution.province}`
+                    : ''}
+                  , aos {formatAngolaDate(new Date())}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 pt-6 text-[11px] text-center">
@@ -2377,7 +2383,15 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </div>
               </div>
 
-              <div className="flex justify-between pt-6 text-[11px] text-center">
+              <div className="text-right text-[11px] text-slate-600 pt-1">
+                {currentInstitution.municipality || currentInstitution.province || 'Angola'}
+                {currentInstitution.municipality && currentInstitution.province
+                  ? `, ${currentInstitution.province}`
+                  : ''}
+                , aos {formatAngolaDate(new Date())}
+              </div>
+
+              <div className="flex justify-between pt-5 text-[11px] text-center">
                 <div className="w-48 border-t border-slate-400 pt-1">
                   A Secretaria Geral
                 </div>

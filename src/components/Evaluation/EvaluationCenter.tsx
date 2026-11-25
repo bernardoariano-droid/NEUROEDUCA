@@ -50,7 +50,10 @@ import {
 } from '../../utils/evaluationEngine';
 import { formatAngolaDate } from '../../utils/currency';
 import { QrCodeView } from '../common/QrCodeView';
-import { OfficialDocumentHeader } from '../common/OfficialDocumentHeader';
+import {
+  OfficialDocumentHeader,
+  loadDocumentHeaderConfig
+} from '../common/OfficialDocumentHeader';
 import { DocumentExportBar } from '../common/DocumentExportBar';
 import {
   FunctionalDropdownFilter,
@@ -1002,9 +1005,11 @@ export const EvaluationCenter: React.FC<EvaluationCenterProps> = ({
           `"${row.resumo.estado}"`
         ].join(';')
       );
+      const docHeader = loadDocumentHeaderConfig(currentInstitution);
       const csvContent = [
-        `"REPÚBLICA DE ANGOLA - DIRECÇÃO MUNICIPAL DA EDUCAÇÃO"`,
-        `"PAUTA GERAL CONSOLIDADA DE APROVEITAMENTO - ${currentInstitution.name}"`,
+        `"${docHeader.line1.toUpperCase()} - ${docHeader.line2.toUpperCase()}"`,
+        `"${docHeader.line3.toUpperCase()} - ${docHeader.line4.toUpperCase()}"`,
+        `"PAUTA GERAL CONSOLIDADA DE APROVEITAMENTO - ${docHeader.line5}"`,
         `"TURMA: ${selectedClass.name} | NÍVEL: ${selectedClass.gradeLevel} | ESCALA: ${scaleConfig.scaleLabel} | ANO LECTIVO: ${selectedClass.academicYear}"`,
         headers.join(';'),
         ...rows
@@ -1074,9 +1079,11 @@ export const EvaluationCenter: React.FC<EvaluationCenterProps> = ({
       ].join(';');
     });
 
+    const docHeader = loadDocumentHeaderConfig(currentInstitution);
     const csvContent = [
-      `"REPÚBLICA DE ANGOLA - MINISTÉRIO DA EDUCAÇÃO"`,
-      `"MINI-PAUTA OFICIAL - ${currentInstitution.name}"`,
+      `"${docHeader.line1.toUpperCase()} - ${docHeader.line2.toUpperCase()}"`,
+      `"${docHeader.line3.toUpperCase()} - ${docHeader.line4.toUpperCase()}"`,
+      `"MINI-PAUTA OFICIAL - ${docHeader.line5}"`,
       `"Turma: ${selectedClass.name} | Disciplina: ${selectedSubject.name} | Escala: ${scaleConfig.scaleLabel} | Período: ${periodLabelMap[selectedPeriod]}"`,
       headers.join(';'),
       ...rows
@@ -2167,7 +2174,11 @@ export const EvaluationCenter: React.FC<EvaluationCenterProps> = ({
                   </div>
                 </div>
                 <div className="text-right">
-                  {currentInstitution.municipality}, aos {formatAngolaDate(new Date())}
+                  {currentInstitution.municipality || currentInstitution.province || 'Angola'}
+                  {currentInstitution.municipality && currentInstitution.province
+                    ? `, ${currentInstitution.province}`
+                    : ''}
+                  , aos {formatAngolaDate(new Date())}
                 </div>
               </div>
 

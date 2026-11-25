@@ -23,6 +23,10 @@ import {
 } from '../../utils/evaluationEngine';
 import { DocumentExportBar } from '../common/DocumentExportBar';
 import {
+  OfficialDocumentHeader,
+  loadDocumentHeaderConfig
+} from '../common/OfficialDocumentHeader';
+import {
   FunctionalDropdownFilter,
   FunctionalDropdownOption
 } from '../common/FunctionalDropdownFilter';
@@ -214,9 +218,11 @@ export const ReportsDashboard: React.FC<ReportsDashboardProps> = ({
       ].join(';')
     );
 
+    const docHeader = loadDocumentHeaderConfig(currentInstitution);
     const csvContent = [
-      `"REPÚBLICA DE ANGOLA - DIRECÇÃO MUNICIPAL DA EDUCAÇÃO"`,
-      `"PAUTA GERAL CONSOLIDADA DE APROVEITAMENTO - ${currentInstitution.name}"`,
+      `"${docHeader.line1.toUpperCase()} - ${docHeader.line2.toUpperCase()}"`,
+      `"${docHeader.line3.toUpperCase()} - ${docHeader.line4.toUpperCase()}"`,
+      `"PAUTA GERAL CONSOLIDADA DE APROVEITAMENTO - ${docHeader.line5}"`,
       `"TURMA: ${selectedClass.name} | NÍVEL: ${selectedClass.gradeLevel} | ANO LECTIVO: ${selectedClass.academicYear}"`,
       headers.join(';'),
       ...rows
@@ -245,7 +251,7 @@ export const ReportsDashboard: React.FC<ReportsDashboardProps> = ({
           <p className="text-xs text-[#4b6755] mt-0.5">
             {isGlobal
               ? 'Painel Geral de Todas as Instituições · Angola'
-              : `NEUROEDUCA · ${currentInstitution.name} (${currentInstitution.province})`}
+              : `NEUROEDUCA · ${currentInstitution.name} · ${currentInstitution.municipality}, ${currentInstitution.province}`}
           </p>
         </div>
 
@@ -330,8 +336,23 @@ export const ReportsDashboard: React.FC<ReportsDashboardProps> = ({
       {/* Detailed Statistical Breakdown */}
       <div
         ref={summaryReportRef}
-        className={`grid grid-cols-1 md:grid-cols-2 gap-6 ${hasConsolidatedPauta ? 'print:hidden' : ''}`}
+        className={`space-y-4 ${hasConsolidatedPauta ? 'print:hidden' : ''}`}
       >
+        {!isGlobal && currentInstitution && (
+          <div className="bg-white rounded-2xl border border-[#dce7df] p-4 shadow-[0_2px_10px_rgba(2,44,22,0.04)]">
+            <OfficialDocumentHeader
+              institution={currentInstitution}
+              editable={false}
+              insigniaClassName="h-12 w-auto mx-auto object-contain"
+              extraMeta={
+                <p className="text-xs font-extrabold uppercase tracking-wide pt-1">
+                  RELATÓRIO ESTATÍSTICO E FINANCEIRO INSTITUCIONAL
+                </p>
+              }
+            />
+          </div>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
           <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white px-5 py-3 flex items-center space-x-2">
             <Users className="w-4 h-4" />
@@ -401,6 +422,7 @@ export const ReportsDashboard: React.FC<ReportsDashboardProps> = ({
               * Pagamentos conciliados automaticamente com referências EMIS Multicaixa Express.
             </div>
           </div>
+        </div>
         </div>
       </div>
 

@@ -1365,8 +1365,12 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   </strong>
                 </div>
                 <div>
-                  Data da Liquidação:{' '}
-                  <strong>{formatAngolaDate(viewingReceiptInvoice.paidAt || new Date().toISOString())}</strong>
+                  Local e Data da Liquidação:{' '}
+                  <strong>
+                    {currentInstitution?.municipality || 'Angola'}
+                    {currentInstitution?.province ? `, ${currentInstitution.province}` : ''} ·{' '}
+                    {formatAngolaDate(viewingReceiptInvoice.paidAt || new Date().toISOString())}
+                  </strong>
                 </div>
               </div>
 

@@ -1554,7 +1554,11 @@ export const AttendanceManager: React.FC<AttendanceManagerProps> = ({
             </table>
 
             <div className="pt-4 text-right text-xs">
-              {currentInstitution.municipality}, aos {formatAngolaDate(new Date())}
+              {currentInstitution.municipality || currentInstitution.province || 'Angola'}
+              {currentInstitution.municipality && currentInstitution.province
+                ? `, ${currentInstitution.province}`
+                : ''}
+              , aos {formatAngolaDate(new Date())}
             </div>
           </div>
         </div>

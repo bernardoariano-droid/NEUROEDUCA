@@ -43,6 +43,7 @@ import {
 } from '../../data/angolaCurriculum';
 import { resolveSubjectsForClass, isExamAndRecourseEligible } from '../../utils/evaluationEngine';
 import { OfficialDocumentHeader } from '../common/OfficialDocumentHeader';
+import { formatAngolaDate } from '../../utils/currency';
 import { DocumentExportBar } from '../common/DocumentExportBar';
 import {
   FunctionalDropdownFilter,
@@ -1059,6 +1060,16 @@ export const ClassesManager: React.FC<ClassesManagerProps> = ({
                     </button>
                   </div>
                 )}
+
+                <div className="mt-4 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-600">
+                  <span>
+                    {currentInstitution?.name || 'Instituição de Ensino'}
+                  </span>
+                  <span>
+                    {currentInstitution?.municipality || 'Município'}
+                    {currentInstitution?.province ? `, ${currentInstitution.province}` : ''} · {formatAngolaDate(new Date().toISOString())}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

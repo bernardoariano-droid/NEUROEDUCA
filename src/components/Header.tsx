@@ -202,15 +202,17 @@ export const Header: React.FC<HeaderProps> = ({
     ? 'NEUROEDUCA SaaS'
     : isMunicipalDirector
     ? `Direcção Municipal de ${currentUser?.municipality || 'Educação'}`
-    : currentInstitution?.name || 'Escola Primária nº 8050 CSU';
+    : currentInstitution?.name || 'Instituição de Ensino';
 
   const institutionSubtitle = isSuperAdmin
     ? 'Painel de Administração Multi-institucional'
     : isMunicipalDirector
     ? `Supervisão Municipal · ${currentUser?.province || 'Angola'}`
+    : currentInstitution?.municipality && currentInstitution?.province
+    ? `${currentInstitution.municipality} · Província de ${currentInstitution.province}`
     : currentInstitution?.municipality
-    ? `Direcção Municipal da Educação de ${currentInstitution.municipality}`
-    : `${currentInstitution?.province || 'Cuanza-Sul'} · Angola`;
+    ? `Município de ${currentInstitution.municipality}`
+    : `${currentInstitution?.province || 'Angola'} · República de Angola`;
 
   const formattedAcademicYear = academicYear.includes('/')
     ? academicYear.replace('/', ' / ')

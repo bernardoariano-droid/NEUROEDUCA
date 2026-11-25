@@ -1085,7 +1085,11 @@ export const DocumentCenter: React.FC<DocumentCenterProps> = ({
 
             {/* Data e Localidade de Emissão em Angola */}
             <div className="pt-4 text-right font-medium text-xs">
-              {currentInstitution.municipality}, aos {formatAngolaDate(new Date())}.
+              {currentInstitution.municipality || currentInstitution.province || 'Angola'}
+              {currentInstitution.municipality && currentInstitution.province
+                ? `, ${currentInstitution.province}`
+                : ''}
+              , aos {formatAngolaDate(new Date())}.
             </div>
 
             {/* Bloco de Assinaturas e Autenticidade com QR Code */}

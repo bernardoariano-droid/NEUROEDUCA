@@ -1,0 +1,305 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  --color-brand-primary: #067836;
+  --color-brand-vivid: #149a45;
+  --color-brand-forest: #005e2c;
+  --color-brand-blue: #1d8cf8;
+  --color-brand-emerald: #16a34a;
+  --color-canvas: #f3f7f4;
+  --color-border-mint: #dce7df;
+}
+
+@layer base {
+  html {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.5;
+    color: #0f172a;
+    background-color: #f3f7f4;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
+  h1, h2, h3 {
+    font-weight: 700;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  button {
+    font-weight: 600;
+  }
+
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #0b8a3e;
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* SaaS Emerald & Mint Smooth Surface Refinements */
+.saas-card,
+.neuro-card {
+  background-color: #ffffff;
+  border: 1px solid #dce7df;
+  border-radius: 1rem;
+  box-shadow: 0 2px 10px rgba(2, 44, 22, 0.04);
+}
+
+.neuro-panel-header {
+  background: linear-gradient(90deg, #067836 0%, #149a45 100%);
+  color: #ffffff;
+}
+
+.neuro-mint-tile {
+  background-color: #eaf6ee;
+  border: 1px solid #cde6d5;
+  color: #055827;
+}
+
+.neuro-mint-tile:hover {
+  background-color: #d8efe0;
+}
+
+.saas-transition {
+  transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Folha Branca Oficial com Letra Arial Tamanho 12pt e Espaçamento 1,5 para Documentos Oficiais */
+.official-document-sheet {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 12pt !important;
+  line-height: 1.5 !important;
+}
+
+.official-document-sheet *,
+.official-document-sheet *::before,
+.official-document-sheet *::after {
+  font-family: Arial, Helvetica, sans-serif !important;
+}
+
+.official-document-sheet:not(.pauta-geral-sheet)
+  *:not(svg):not(path):not(circle):not(rect):not(line):not(polygon):not(polyline):not(img):not(button):not(button *):not(.print\:hidden):not(.print\:hidden *) {
+  font-size: 12pt !important;
+  line-height: 1.5 !important;
+  background-color: #ffffff !important;
+}
+
+/* Pauta Geral: letras reduzidas e espaçamento compacto para caber todas as disciplinas, notas e Resultado */
+.official-document-sheet.pauta-geral-sheet {
+  font-size: 8.5pt !important;
+  line-height: 1.3 !important;
+}
+
+.official-document-sheet.pauta-geral-sheet
+  *:not(svg):not(path):not(circle):not(rect):not(line):not(polygon):not(polyline):not(img):not(button):not(button *):not(.print\:hidden):not(.print\:hidden *) {
+  background-color: #ffffff !important;
+  line-height: 1.25 !important;
+}
+
+.official-document-sheet.pauta-geral-sheet .pauta-title {
+  font-size: 11pt !important;
+  line-height: 1.3 !important;
+}
+
+.official-document-sheet.pauta-geral-sheet .pauta-meta {
+  font-size: 8pt !important;
+  line-height: 1.3 !important;
+}
+
+.official-document-sheet.pauta-geral-sheet table,
+.official-document-sheet.pauta-geral-sheet th,
+.official-document-sheet.pauta-geral-sheet td {
+  font-size: 7.5pt !important;
+  line-height: 1.2 !important;
+}
+
+.official-document-sheet.pauta-geral-sheet .pauta-signatures,
+.official-document-sheet.pauta-geral-sheet .pauta-signatures * {
+  font-size: 8pt !important;
+  line-height: 1.3 !important;
+}
+
+.official-document-sheet input {
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 12pt !important;
+  line-height: 1.5 !important;
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}
+
+.official-document-sheet h1,
+.official-document-sheet h2,
+.official-document-sheet h3,
+.official-document-sheet h4,
+.official-document-sheet p:not(.print\:hidden *),
+.official-document-sheet span:not(.text-red-600):not(.text-red-700):not(.text-amber-700):not(.text-amber-800):not(button *):not(.print\:hidden *),
+.official-document-sheet div:not(.text-red-600):not(.text-red-700):not(.text-amber-700):not(.text-amber-800):not(.print\:hidden):not(.print\:hidden *),
+.official-document-sheet th,
+.official-document-sheet td:not(.text-red-600):not(.text-amber-700),
+.official-document-sheet dt,
+.official-document-sheet dd,
+.official-document-sheet li,
+.official-document-sheet strong:not(.text-red-600):not(.text-amber-700) {
+  color: #000000 !important;
+}
+
+.official-document-sheet .text-red-600,
+.official-document-sheet .text-red-700 {
+  color: #b91c1c !important;
+}
+
+.official-document-sheet .text-amber-700,
+.official-document-sheet .text-amber-800 {
+  color: #92400e !important;
+}
+
+.official-document-sheet table,
+.official-document-sheet th,
+.official-document-sheet td {
+  border-color: #000000 !important;
+}
+
+/* Print optimizations for official Angolan documents (A4 & A5, Portrait & Landscape) */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  header, aside, .print\\:hidden {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .overflow-x-auto,
+  .overflow-y-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .print\\:shadow-none {
+    box-shadow: none !important;
+  }
+
+  .print\\:border-none {
+    border: none !important;
+  }
+
+  /* Isolated document printing container (solves modal & multi-section clipping) */
+  body.neuroeduca-print-isolated > *:not(#neuroeduca-print-root) {
+    display: none !important;
+  }
+
+  #neuroeduca-print-root {
+    display: block !important;
+    width: 100% !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-family: Arial, Helvetica, sans-serif !important;
+    font-size: 12pt !important;
+    line-height: 1.5 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  #neuroeduca-print-root * {
+    font-family: Arial, Helvetica, sans-serif !important;
+    background-color: #ffffff !important;
+  }
+
+  #neuroeduca-print-root:not(:has(.pauta-geral-sheet)) * {
+    font-size: 12pt !important;
+    line-height: 1.5 !important;
+  }
+
+  #neuroeduca-print-root .pauta-geral-sheet {
+    font-size: 8pt !important;
+    line-height: 1.25 !important;
+  }
+
+  #neuroeduca-print-root .pauta-geral-sheet .pauta-title {
+    font-size: 10.5pt !important;
+  }
+
+  #neuroeduca-print-root .pauta-geral-sheet table,
+  #neuroeduca-print-root .pauta-geral-sheet th,
+  #neuroeduca-print-root .pauta-geral-sheet td {
+    font-size: 7pt !important;
+    line-height: 1.18 !important;
+    padding: 2px 2.5px !important;
+  }
+
+  body.neuroeduca-print-a5 #neuroeduca-print-root {
+    zoom: 0.72;
+  }
+}
+
+/* Tabular figures for financial and grade data */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

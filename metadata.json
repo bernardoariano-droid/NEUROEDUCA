@@ -1,0 +1,6 @@
+{
+  "name": "NEUROEDUCA - Sistema de Gestão Escolar de Angola",
+  "description": "Sistema de Gestão Escolar Multi-institucional, moderno e inteligente, totalmente adaptado ao Sistema de Educação e Ensino da República de Angola (11 subsistemas, motor curricular INIDE, pautas, finanças e IA pedagógica).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

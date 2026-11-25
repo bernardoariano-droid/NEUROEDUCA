@@ -513,6 +513,8 @@ export default function App() {
     };
 
     const initialLocalTimestamp = storageService.getLastUpdatedTimestamp();
+    const EPOCH_SEED_THRESHOLD = Date.parse('1970-01-02T00:00:00.000Z');
+    const isFreshBrowserSeed = initialLocalTimestamp <= EPOCH_SEED_THRESHOLD;
 
     fetch('/api/sync')
       .then((res) => res.json())
@@ -521,10 +523,10 @@ export default function App() {
         const serverTimestamp = data?.updatedAt ? Date.parse(data.updatedAt) || 0 : 0;
 
         if (data && Array.isArray(data.institutions) && data.institutions.length > 0) {
-          if (!initialLocalTimestamp || serverTimestamp > initialLocalTimestamp) {
+          if (isFreshBrowserSeed || !initialLocalTimestamp || serverTimestamp > initialLocalTimestamp) {
             applyBundleToState(data, data.updatedAt);
           }
-        } else {
+        } else if (!isFreshBrowserSeed) {
           fetch('/api/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -534,13 +536,13 @@ export default function App() {
       })
       .catch((err) => console.log('Sincronização inicial:', err));
 
-    // Verificar se o Supabase está configurado (Secrets ou navegador) e puxar actualizações mais recentes
+    // Verificar se o Supabase está configurado (Variáveis/Servidor ou navegador) e puxar actualizações mais recentes
     fetchServerSupabaseStatus()
       .then(async (status) => {
         if (cancelled) return;
         const cfg = getSupabaseConfig();
         const shouldPullFromCloud =
-          status.serverConfigured || (cfg.url && cfg.anonKey && (cfg.autoSync || cfg.isConnected));
+          status.serverConfigured || Boolean(cfg.url && cfg.anonKey);
         if (!shouldPullFromCloud) return;
 
         const pullRes = await pullSupabaseDataToLocal();
@@ -548,8 +550,8 @@ export default function App() {
 
         const localTs = storageService.getLastUpdatedTimestamp();
         const cloudTs = pullRes.cloudUpdatedAt ? Date.parse(pullRes.cloudUpdatedAt) || 0 : 0;
-        if (cloudTs > localTs) {
-          applyBundleToState(pullRes.bundle, pullRes.cloudUpdatedAt);
+        if (cloudTs > localTs || localTs <= EPOCH_SEED_THRESHOLD) {
+          applyBundleToState(pullRes.bundle, pullRes.cloudUpdatedAt || new Date().toISOString());
         } else if (Array.isArray(pullRes.bundle.accounts) && pullRes.bundle.accounts.length > 0) {
           // Garantir que novas contas criadas directamente no Supabase (ex: Super Admin SQL) ficam disponíveis no login
           const existingEmails = new Set(
@@ -2626,7 +2628,7 @@ export default function App() {
     persistState({ attendance: updatedAttendance, auditLogs: updatedLogs });
   };
 
-  // Handlers de Autenticação (Login, Registo e Logout)
+  // Handlers de Autenticação (Login e Logout)
   const handleLogin = (user: UserProfile, inst: Institution | null) => {
     const safeInst =
       user.role === 'super_admin' || user.role === 'director_municipal' ? null : inst;
@@ -2640,74 +2642,52 @@ export default function App() {
     setActiveRole(user.role);
     setCurrentTab(getDefaultTabForRole(user.role, Boolean(safeInst)));
     localStorage.setItem('neuroeduca_user', JSON.stringify(user));
-  };
 
-  const handleRegisterInstitution = (newInst: Institution, adminUser: UserProfile) => {
-    handleAddInstitution(newInst);
-    setCurrentInstitution(newInst);
-    setActiveRole('director_geral');
-    setCurrentUser(adminUser);
-    setCurrentTab('dashboard');
-    localStorage.setItem('neuroeduca_user', JSON.stringify(adminUser));
-  };
-
-  const handleRegisterUser = (newUser: UserProfile, targetInst: Institution, password?: string) => {
-    let updatedInstitutions = institutions;
-    if (!institutions.some((i) => i.id === targetInst.id)) {
-      updatedInstitutions = [targetInst, ...institutions];
-      setInstitutions(updatedInstitutions);
+    // Sincronizar dados mais recentes da nuvem Supabase após autenticação (necessário quando RLS exige sessão JWT)
+    const cfg = getSupabaseConfig();
+    if (cfg.url && cfg.anonKey) {
+      pullSupabaseDataToLocal()
+        .then((pullRes) => {
+          if (!pullRes.success || !pullRes.bundle) return;
+          const b = pullRes.bundle;
+          if (Array.isArray(b.institutions) && b.institutions.length > 0) {
+            setInstitutions(b.institutions);
+            if (user.role !== 'super_admin' && user.role !== 'director_municipal') {
+              const resolvedInst =
+                b.institutions.find((i) => i.id === (user.institutionId || safeInst?.id)) ||
+                b.institutions[0];
+              if (resolvedInst) {
+                setCurrentInstitution(resolvedInst);
+              }
+            }
+          }
+          if (Array.isArray(b.classes)) setClasses(b.classes);
+          if (Array.isArray(b.subjects)) setSubjects(b.subjects);
+          if (Array.isArray(b.students)) setStudents(b.students);
+          if (Array.isArray(b.teachers)) setTeachers(b.teachers);
+          if (Array.isArray(b.grades)) setGrades(b.grades);
+          if (Array.isArray(b.invoices)) setInvoices(b.invoices);
+          if (Array.isArray(b.auditLogs)) setAuditLogs(b.auditLogs);
+          if (Array.isArray(b.schoolUsers)) setSchoolUsers(b.schoolUsers);
+          if (Array.isArray(b.accounts)) setAccounts(b.accounts);
+          if (Array.isArray(b.digitalArchive)) setDigitalArchive(b.digitalArchive);
+          if (Array.isArray(b.attendance)) setAttendanceRecords(b.attendance);
+          if (Array.isArray(b.financialNotifications)) {
+            setFinancialNotifications(b.financialNotifications);
+          }
+          if (Array.isArray(b.announcements)) setAnnouncements(b.announcements);
+          if (Array.isArray(b.psychopedagogicalProtocols)) {
+            setPsychopedagogicalProtocols(b.psychopedagogicalProtocols);
+          }
+          if (Array.isArray(b.psychopedagogicalCases)) {
+            setPsychopedagogicalCases(b.psychopedagogicalCases);
+          }
+          storageService.saveAll(b, {
+            preserveUpdatedAt: pullRes.cloudUpdatedAt || new Date().toISOString()
+          });
+        })
+        .catch(() => {});
     }
-
-    const schoolRole: SchoolUser['role'] =
-      newUser.role === 'professor' ||
-      newUser.role === 'funcionario_financeiro' ||
-      newUser.role === 'aluno' ||
-      newUser.role === 'encarregado_educacao' ||
-      newUser.role === 'subdirector_pedagogico' ||
-      newUser.role === 'secretario_geral'
-        ? newUser.role
-        : 'director_geral';
-
-    const newSchoolUser: SchoolUser = {
-      id: newUser.id,
-      institutionId: targetInst.id,
-      fullName: newUser.fullName,
-      email: newUser.email,
-      phone: newUser.phone || '+244 923 000 000',
-      role: schoolRole,
-      status: 'activo',
-      departmentOrClass:
-        schoolRole === 'director_geral' ? 'Direcção Geral' : 'Registo Directo no Portal',
-      createdAt: new Date().toISOString().split('T')[0]
-    };
-    const updatedSchoolUsers = [
-      newSchoolUser,
-      ...schoolUsers.filter((u) => u.email.toLowerCase() !== newUser.email.toLowerCase())
-    ];
-    setSchoolUsers(updatedSchoolUsers);
-
-    const updatedAccounts = storageService.upsertAccount({
-      email: newUser.email,
-      password: password || '123',
-      fullName: newUser.fullName,
-      role: newUser.role,
-      institutionId: targetInst.id,
-      institutionName: targetInst.name,
-      status: 'activo'
-    });
-    setAccounts(updatedAccounts);
-
-    persistState({
-      institutions: updatedInstitutions,
-      schoolUsers: updatedSchoolUsers,
-      accounts: updatedAccounts
-    });
-
-    setCurrentInstitution(targetInst);
-    setActiveRole(newUser.role);
-    setCurrentUser(newUser);
-    setCurrentTab(getDefaultTabForRole(newUser.role, true));
-    localStorage.setItem('neuroeduca_user', JSON.stringify(newUser));
   };
 
   const handleLogout = () => {
@@ -2720,14 +2700,12 @@ export default function App() {
     localStorage.removeItem('neuroeduca_user');
   };
 
-  // Se o utilizador não estiver autenticado, exibe a Página de Login e Cadastro
+  // Se o utilizador não estiver autenticado, exibe a Página de Login
   if (!currentUser) {
     return (
       <AuthPage
         institutions={institutions}
         onLogin={handleLogin}
-        onRegisterInstitution={handleRegisterInstitution}
-        onRegisterUser={handleRegisterUser}
       />
     );
   }

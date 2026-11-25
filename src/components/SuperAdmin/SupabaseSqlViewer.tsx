@@ -32,6 +32,7 @@ import {
   getSupabaseConfig,
   normalizeSupabaseUrlSafe,
   pullSupabaseDataToLocal,
+  saveServerSupabaseConfig,
   saveSupabaseConfig,
   ServerSupabaseStatus,
   SupabaseConfig,
@@ -90,6 +91,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
     refreshStats();
     fetchServerSupabaseStatus().then((status) => {
       setServerStatus(status);
+      setSupabaseConfig(getSupabaseConfig());
     });
   }, []);
 
@@ -116,34 +118,64 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
     setConnectionResult(result);
 
     if (result.success) {
+      const targetUrl = result.normalizedUrl || normalizedUrl;
       const updatedConfig = saveSupabaseConfig({
         ...supabaseConfig,
-        url: result.normalizedUrl || normalizedUrl,
+        url: targetUrl,
         isConnected: true,
+        autoSync: true,
         syncStatusMessage: result.message
       });
       setSupabaseConfig(updatedConfig);
+
+      if (targetUrl && supabaseConfig.anonKey) {
+        await saveServerSupabaseConfig(targetUrl, supabaseConfig.anonKey, true);
+        const latestStatus = await fetchServerSupabaseStatus();
+        setServerStatus(latestStatus);
+      }
     }
   };
 
-  // Guardar Configuração
-  const handleSaveConfig = (e: React.FormEvent) => {
+  // Guardar Configuração (Local + Servidor Permanente)
+  const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    const saved = saveSupabaseConfig(supabaseConfig);
+    setActionError(null);
+    const saved = saveSupabaseConfig({
+      ...supabaseConfig,
+      isConnected: Boolean(supabaseConfig.url && supabaseConfig.anonKey),
+      autoSync: true
+    });
     setSupabaseConfig(saved);
-    setActionNotice(
-      'Credenciais do Supabase normalizadas e guardadas com sucesso neste navegador!'
-    );
-    setTimeout(() => setActionNotice(null), 4000);
+
+    if (saved.url && saved.anonKey) {
+      const serverRes = await saveServerSupabaseConfig(saved.url, saved.anonKey, true);
+      const latestStatus = await fetchServerSupabaseStatus();
+      setServerStatus(latestStatus);
+      if (serverRes.success) {
+        setActionNotice(
+          'Ligação permanente ao Supabase guardada no servidor! Qualquer utilizador cadastrado que abrir o link do sistema ficará ligado automaticamente.'
+        );
+      } else {
+        setActionNotice(
+          'Credenciais guardadas no navegador. Para ligação permanente na Vercel, adicione VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nas variáveis de ambiente.'
+        );
+      }
+    } else {
+      setActionNotice('Credenciais do Supabase actualizadas neste navegador.');
+    }
+    setTimeout(() => setActionNotice(null), 5000);
   };
 
-  const handleToggleAutoSync = () => {
+  const handleToggleAutoSync = async () => {
     const nextValue = !supabaseConfig.autoSync;
     const saved = saveSupabaseConfig({
       ...supabaseConfig,
       autoSync: nextValue
     });
     setSupabaseConfig(saved);
+    if (saved.url && saved.anonKey) {
+      await saveServerSupabaseConfig(saved.url, saved.anonKey, nextValue);
+    }
     setActionNotice(
       nextValue
         ? 'Sincronização automática activada: alterações locais serão enviadas para o Supabase em tempo real.'
@@ -165,6 +197,9 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
       setSupabaseConfig(saved);
     } else {
       saveSupabaseConfig(supabaseConfig);
+    }
+    if (normalizedUrl && supabaseConfig.anonKey) {
+      await saveServerSupabaseConfig(normalizedUrl, supabaseConfig.anonKey, true);
     }
 
     const currentBundle = storageService.initializeStorage();
@@ -535,10 +570,14 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
                   <ShieldCheck className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
                   <div>
                     <span className="font-bold block">
-                      Credenciais Supabase Detectadas nas Variáveis do Servidor ({serverStatus.urlHost})
+                      {serverStatus.configuredViaEnv
+                        ? `Ligação Permanente Activa via Variáveis de Ambiente (${serverStatus.urlHost})`
+                        : `Ligação Permanente Activa no Servidor (${serverStatus.urlHost})`}
                     </span>
                     <span>
-                      A aplicação já consegue testar, enviar (Push) e importar (Pull) dados directamente pelo servidor seguro mesmo sem preencher os campos abaixo.
+                      {serverStatus.configuredViaEnv
+                        ? 'Todos os utilizadores cadastrados que receberem o link do sistema ligam-se automaticamente ao Supabase em qualquer navegador ou dispositivo.'
+                        : 'Credenciais guardadas no servidor para partilha automática com novos dispositivos. Para deploys serverless na Vercel, recomenda-se também definir VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nas Environment Variables da Vercel.'}
                     </span>
                   </div>
                 </div>

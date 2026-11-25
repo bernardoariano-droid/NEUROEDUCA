@@ -370,25 +370,28 @@ class StorageService {
       psychopedagogicalProtocols = INITIAL_PSYCHOPEDAGOGICAL_PROTOCOLS;
       psychopedagogicalCases = INITIAL_PSYCHOPEDAGOGICAL_CASES;
 
-      this.saveAll({
-        institutions,
-        classes,
-        subjects,
-        students,
-        teachers,
-        grades,
-        invoices,
-        auditLogs,
-        schoolUsers,
-        accounts,
-        subscriptionPlans,
-        digitalArchive,
-        attendance,
-        financialNotifications,
-        announcements,
-        psychopedagogicalProtocols,
-        psychopedagogicalCases
-      });
+      this.saveAll(
+        {
+          institutions,
+          classes,
+          subjects,
+          students,
+          teachers,
+          grades,
+          invoices,
+          auditLogs,
+          schoolUsers,
+          accounts,
+          subscriptionPlans,
+          digitalArchive,
+          attendance,
+          financialNotifications,
+          announcements,
+          psychopedagogicalProtocols,
+          psychopedagogicalCases
+        },
+        { preserveUpdatedAt: '1970-01-01T00:00:00.000Z' }
+      );
       localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, CURRENT_STORAGE_VERSION);
     } else {
       // Garantir que schoolUsers, accounts, digitalArchive, attendance, notificações, comunicados e psicopedagogia estão inicializados e persistidos

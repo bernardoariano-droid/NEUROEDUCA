@@ -43,8 +43,11 @@ export interface SupabaseConfig {
 
 export interface ServerSupabaseStatus {
   serverConfigured: boolean;
+  configuredViaEnv?: boolean;
   urlHost: string | null;
   normalizedUrl: string;
+  publicUrl?: string;
+  publicAnonKey?: string;
 }
 
 const SUPABASE_CONFIG_KEY = 'neuroeduca_supabase_config';
@@ -206,6 +209,39 @@ export function isServerSupabaseConfigured(): boolean {
   return serverConfiguredCached;
 }
 
+export async function saveServerSupabaseConfig(
+  url: string,
+  anonKey: string,
+  autoSync = true
+): Promise<{ success: boolean; urlHost?: string | null; message?: string }> {
+  const cleanUrl = normalizeSupabaseUrlSafe(url);
+  const cleanKey = String(anonKey || '').trim();
+  if (!cleanUrl || !cleanKey) {
+    return { success: false, message: 'URL e chave pública obrigatórios.' };
+  }
+
+  try {
+    const res = await fetch('/api/supabase/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey, autoSync })
+    });
+    const data = (await res.json()) as {
+      success?: boolean;
+      serverConfigured?: boolean;
+      urlHost?: string | null;
+      message?: string;
+    };
+    if (res.ok && data?.success) {
+      serverConfiguredCached = true;
+      return { success: true, urlHost: data.urlHost || null };
+    }
+    return { success: false, message: data?.message || 'Erro ao guardar no servidor.' };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Erro de rede ao contactar servidor.' };
+  }
+}
+
 export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus> {
   try {
     const res = await fetch('/api/supabase/status');
@@ -215,6 +251,33 @@ export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus>
     }
     const data = (await res.json()) as ServerSupabaseStatus;
     serverConfiguredCached = Boolean(data?.serverConfigured);
+
+    // Hidratar automaticamente qualquer navegador que abra o link partilhado
+    if (
+      typeof window !== 'undefined' &&
+      data?.serverConfigured &&
+      data?.publicUrl &&
+      data?.publicAnonKey
+    ) {
+      const current = getSupabaseConfig();
+      const needsHydration =
+        !current.url ||
+        !current.anonKey ||
+        Boolean(data.configuredViaEnv && (current.url !== data.publicUrl || current.anonKey !== data.publicAnonKey));
+
+      if (needsHydration) {
+        saveSupabaseConfig({
+          ...current,
+          url: data.publicUrl,
+          anonKey: data.publicAnonKey,
+          isConnected: true,
+          autoSync: true,
+          lastSyncAt: current.lastSyncAt || null,
+          syncStatusMessage: current.syncStatusMessage || 'Ligação permanente à nuvem activa.'
+        });
+      }
+    }
+
     return data;
   } catch {
     serverConfiguredCached = false;
@@ -429,8 +492,13 @@ export async function verifySupabaseAccountLogin(
   const cleanPassword = String(password || '').trim();
   if (!cleanEmail || !cleanPassword) return { authenticated: false };
 
-  const client = getSupabaseClient();
-  const config = getSupabaseConfig();
+  let client = getSupabaseClient();
+  let config = getSupabaseConfig();
+  if (!client || !config.url || !config.anonKey) {
+    await fetchServerSupabaseStatus();
+    client = getSupabaseClient();
+    config = getSupabaseConfig();
+  }
   if (client && config.url && config.anonKey) {
     try {
       // 1. Verificação segura via RPC SECURITY DEFINER (sem expor passwords via REST)

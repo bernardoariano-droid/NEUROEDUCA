@@ -11,26 +11,24 @@ import {
   EyeOff,
   CheckCircle2,
   AlertCircle,
-  Building2,
   ShieldCheck,
   User,
-  GraduationCap,
-  ArrowRight,
   Lock,
   LogIn,
   Check,
   Globe,
   ChevronDown,
-  ChevronUp,
-  UserPlus,
   Cloud
 } from 'lucide-react';
 import { Institution, StoredCredential, UserProfile, UserRole } from '../../types';
-import { DEFAULT_ACCOUNTS, storageService } from '../../services/storageService';
+import { storageService } from '../../services/storageService';
 import {
+  fetchServerSupabaseStatus,
   getSupabaseConfig,
   normalizeSupabaseUrl,
   normalizeSupabaseUrlSafe,
+  pullSupabaseDataToLocal,
+  saveServerSupabaseConfig,
   saveSupabaseConfig,
   signInSupabaseAuthSession,
   verifySupabaseAccountLogin
@@ -39,26 +37,25 @@ import {
 interface AuthPageProps {
   institutions: Institution[];
   onLogin: (user: UserProfile, institution: Institution | null) => void;
-  onRegisterInstitution?: (newInst: Institution, adminUser: UserProfile) => void;
-  onRegisterUser: (newUser: UserProfile, institution: Institution, password?: string) => void;
 }
 
 const REMEMBER_EMAIL_KEY = 'neuroeduca_remembered_email';
 
 export const AuthPage: React.FC<AuthPageProps> = ({
   institutions,
-  onLogin,
-  onRegisterUser
+  onLogin
 }) => {
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [showForgotModal, setShowForgotModal] = useState(false);
-  const [showDemoAccounts, setShowDemoAccounts] = useState(false);
   const [showCloudConfigBox, setShowCloudConfigBox] = useState(false);
   const [cloudUrlInput, setCloudUrlInput] = useState(() => getSupabaseConfig().url || '');
   const [cloudKeyInput, setCloudKeyInput] = useState(() => getSupabaseConfig().anonKey || '');
+  const [isCloudReady, setIsCloudReady] = useState(() => {
+    const cfg = getSupabaseConfig();
+    return Boolean(cfg.url && cfg.anonKey);
+  });
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [language, setLanguage] = useState<'pt' | 'en'>('pt');
   const [showLangMenu, setShowLangMenu] = useState(false);
@@ -80,46 +77,24 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     }
   });
 
-  // Estados do Cadastro
-  const [registerFullName, setRegisterFullName] = useState('');
-  const [registerInstitutionId, setRegisterInstitutionId] = useState<string>(
-    institutions[0]?.id || ''
-  );
-  const [registerCustomInstName, setRegisterCustomInstName] = useState('');
-  const [isCreatingNewSchool, setIsCreatingNewSchool] = useState(false);
-  const [registerRole, setRegisterRole] = useState<
-    'director_geral' | 'professor' | 'aluno' | 'encarregado_educacao'
-  >('director_geral');
-  const [registerEmail, setRegisterEmail] = useState('');
-  const [registerPassword, setRegisterPassword] = useState('');
-  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
-
-  const [accounts, setAccounts] = useState<StoredCredential[]>(() =>
-    storageService.getAccounts()
-  );
-
   useEffect(() => {
-    setAccounts(storageService.getAccounts());
-  }, [institutions]);
-
-  useEffect(() => {
-    setErrorMsg('');
-    setSuccessMsg('');
-  }, [authMode]);
+    let active = true;
+    fetchServerSupabaseStatus()
+      .then((status) => {
+        if (!active) return;
+        const cfg = getSupabaseConfig();
+        const ready = Boolean(status.serverConfigured || (cfg.url && cfg.anonKey));
+        setIsCloudReady(ready);
+        if (cfg.url) setCloudUrlInput(cfg.url);
+        if (cfg.anonKey) setCloudKeyInput(cfg.anonKey);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const isPt = language === 'pt';
-
-  const handlePrefillCredentials = (account: StoredCredential) => {
-    setAuthMode('login');
-    setLoginEmail(account.email);
-    setLoginPassword(account.password || '123');
-    setErrorMsg('');
-    setSuccessMsg(
-      isPt
-        ? `Credenciais de "${account.fullName}" preenchidas. Clique em Entrar.`
-        : `Credentials for "${account.fullName}" filled. Click Sign In.`
-    );
-  };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,16 +141,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             province: cloudCheck.account.province,
             status: 'activo'
           };
-          const updatedList = storageService.upsertAccount(syncedCred);
-          setAccounts(updatedList);
+          storageService.upsertAccount(syncedCred);
           matched = syncedCred;
+          setIsCloudReady(true);
         } else if (!matched) {
           if (cloudCheck.cloudUnavailable) {
             setShowCloudConfigBox(true);
             setErrorMsg(
               isPt
-                ? 'Esta conta não está na memória local e o acesso à nuvem Supabase ainda não está ligado neste navegador. Cole abaixo o URL e a Chave Pública do Supabase (ou configure em Settings > Secrets).'
-                : 'Account not cached locally and Supabase connection is not configured in this browser yet.'
+                ? 'Ligação ao Supabase ainda não configurada neste servidor. Cole abaixo o URL e a Chave Pública (ou defina em Settings > Secrets / Vercel Env).'
+                : 'Supabase connection is not configured yet. Paste the URL and Public Key below.'
             );
             return;
           }
@@ -223,7 +198,18 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         // Ignora erros de armazenamento
       }
 
-      signInSupabaseAuthSession(cleanEmail, cleanPassword).catch(() => {});
+      await signInSupabaseAuthSession(cleanEmail, cleanPassword).catch(() => {});
+
+      let availableInstitutions = institutions;
+      if (
+        matched.institutionId &&
+        !availableInstitutions.some((i) => i.id === matched!.institutionId)
+      ) {
+        const pulled = await pullSupabaseDataToLocal().catch(() => null);
+        if (pulled?.success && pulled.bundle?.institutions?.length) {
+          availableInstitutions = pulled.bundle.institutions;
+        }
+      }
 
       setSuccessMsg(
         isPt
@@ -256,16 +242,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           onLogin(profile, null);
         } else {
           const targetInst =
-            institutions.find((i) => i.id === matched!.institutionId) ||
-            institutions[0];
+            availableInstitutions.find((i) => i.id === matched!.institutionId) ||
+            availableInstitutions[0];
 
           const profile: UserProfile = {
             id: `usr-${Date.now()}`,
             fullName: matched!.fullName,
             email: matched!.email,
             role: matched!.role || 'director_geral',
-            institutionId: targetInst?.id,
-            institutionName: targetInst?.name
+            institutionId: targetInst?.id || matched!.institutionId,
+            institutionName: targetInst?.name || matched!.institutionName
           };
           onLogin(profile, targetInst || null);
         }
@@ -306,8 +292,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       autoSync: true,
       lastSyncAt: null
     });
+    await saveServerSupabaseConfig(cleanUrl, cleanKey, true);
     setCloudUrlInput(normalizeSupabaseUrlSafe(cleanUrl));
     setShowCloudConfigBox(false);
+    setIsCloudReady(true);
     setErrorMsg('');
 
     if (loginEmail.trim() && loginPassword.trim()) {
@@ -319,125 +307,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           : 'Supabase connection saved! Now enter your email and password.'
       );
     }
-  };
-
-  const handleRegisterSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    const cleanFullName = registerFullName.trim();
-    const cleanEmail = registerEmail.trim().toLowerCase();
-    const cleanPassword = registerPassword.trim();
-
-    if (!cleanFullName) {
-      setErrorMsg(isPt ? 'Por favor, informe o nome completo do utilizador.' : 'Please enter full name.');
-      return;
-    }
-
-    if (isCreatingNewSchool && !registerCustomInstName.trim()) {
-      setErrorMsg(isPt ? 'Por favor, informe o nome da instituição de ensino.' : 'Please enter school name.');
-      return;
-    }
-
-    if (!cleanEmail) {
-      setErrorMsg(isPt ? 'Por favor, indique um e-mail válido.' : 'Please enter a valid email.');
-      return;
-    }
-
-    if (cleanPassword.length < 3) {
-      setErrorMsg(isPt ? 'A palavra-passe deve conter pelo menos 3 caracteres.' : 'Password must have at least 3 characters.');
-      return;
-    }
-
-    if (cleanPassword !== registerConfirmPassword.trim()) {
-      setErrorMsg(isPt ? 'As palavras-passe não coincidem.' : 'Passwords do not match.');
-      return;
-    }
-
-    const latestAccounts = storageService.getAccounts();
-    if (latestAccounts.some((a) => a.email.toLowerCase() === cleanEmail)) {
-      setErrorMsg(
-        isPt
-          ? 'Este e-mail já está cadastrado. Faça login com a sua conta existente.'
-          : 'This email is already registered. Please sign in.'
-      );
-      return;
-    }
-
-    let targetInst: Institution;
-    if (isCreatingNewSchool) {
-      const newInstId = `inst-${Date.now()}`;
-      const acronymGen =
-        registerCustomInstName
-          .split(' ')
-          .map((w) => w[0])
-          .join('')
-          .toUpperCase()
-          .slice(0, 5) || 'ESC';
-
-      targetInst = {
-        id: newInstId,
-        code: `${acronymGen}-2026`,
-        name: registerCustomInstName.trim(),
-        acronym: acronymGen,
-        nif: `5000${Math.floor(100000 + Math.random() * 900000)}`,
-        licenseNumber: `Dec. Exec. nº ${Math.floor(100 + Math.random() * 900)}/MED/2026`,
-        institutionType: 'privada',
-        category: 'complexo_escolar',
-        province: 'Luanda',
-        municipality: 'Município Sede',
-        address: 'Bairro Central, Angola',
-        phone: '+244 923 000 000',
-        email: cleanEmail,
-        directorName: cleanFullName,
-        subsystems: ['primario_geral', 'secundario_geral_1'],
-        status: 'active',
-        maxClasses: 25,
-        currentClassesCount: 0,
-        currentStudentsCount: 0,
-        currentTeachersCount: 0,
-        createdAt: new Date().toISOString().split('T')[0]
-      };
-    } else {
-      targetInst =
-        institutions.find((i) => i.id === registerInstitutionId) ||
-        institutions[0];
-    }
-
-    const effectiveRole: UserRole = isCreatingNewSchool ? 'director_geral' : registerRole;
-
-    const newUserProfile: UserProfile = {
-      id: `usr-${Date.now()}`,
-      fullName: cleanFullName,
-      email: cleanEmail,
-      role: effectiveRole,
-      institutionId: targetInst.id,
-      institutionName: targetInst.name
-    };
-
-    const newCredential: StoredCredential = {
-      email: cleanEmail,
-      password: cleanPassword,
-      fullName: cleanFullName,
-      role: effectiveRole,
-      institutionId: targetInst.id,
-      institutionName: targetInst.name,
-      status: 'activo'
-    };
-
-    const nextAccounts = storageService.upsertAccount(newCredential);
-    setAccounts(nextAccounts);
-
-    setSuccessMsg(
-      isPt
-        ? `Conta criada e guardada para ${cleanFullName}! A iniciar...`
-        : `Account created for ${cleanFullName}! Starting...`
-    );
-
-    setTimeout(() => {
-      onRegisterUser(newUserProfile, targetInst, cleanPassword);
-    }, 500);
   };
 
   return (
@@ -646,39 +515,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           </div>
         </section>
 
-        {/* COLUNA DIREITA: CARTÃO FLUTUANTE BRANCO DE INÍCIO DE SESSÃO / REGISTO */}
+        {/* COLUNA DIREITA: CARTÃO FLUTUANTE BRANCO DE INÍCIO DE SESSÃO */}
         <section className="w-full max-w-[445px] lg:ml-auto">
           <div className="bg-white rounded-[26px] border border-[#dce7df] shadow-[0_20px_55px_rgba(2,44,22,0.14)] p-6 sm:p-8">
             {/* Ícone Circular Cadeado Verde no Topo */}
             <div className="flex justify-center">
               <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#06823b] to-[#16a34a] text-white shadow-[0_8px_20px_rgba(6,130,59,0.28)] flex items-center justify-center">
-                {authMode === 'login' ? (
-                  <Lock className="w-8 h-8" />
-                ) : (
-                  <UserPlus className="w-8 h-8" />
-                )}
+                <Lock className="w-8 h-8" />
               </div>
             </div>
 
             {/* Título & Subtítulo */}
             <div className="text-center mt-4 mb-5">
               <h2 className="font-display text-2xl sm:text-[28px] font-extrabold text-[#0b2316] tracking-tight">
-                {authMode === 'login'
-                  ? isPt
-                    ? 'Iniciar Sessão'
-                    : 'Sign In'
-                  : isPt
-                  ? 'Criar Conta'
-                  : 'Create Account'}
+                {isPt ? 'Iniciar Sessão' : 'Sign In'}
               </h2>
               <p className="text-xs sm:text-sm text-[#4b6755] mt-1">
-                {authMode === 'login'
-                  ? isPt
-                    ? 'Acesse o seu painel de gestão'
-                    : 'Access your management dashboard'
-                  : isPt
-                  ? 'Associe o seu perfil à sua instituição de ensino'
-                  : 'Link your profile to your school'}
+                {isPt ? 'Acesse o seu painel de gestão' : 'Access your management dashboard'}
               </p>
             </div>
 
@@ -698,8 +551,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             )}
 
             {/* FORMULÁRIO DE LOGIN */}
-            {authMode === 'login' && (
-              <form onSubmit={handleLoginSubmit} className="space-y-3.5">
+            <form onSubmit={handleLoginSubmit} className="space-y-3.5">
                 <div className="relative">
                   <User className="w-4 h-4 text-[#067836] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -774,8 +626,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   </span>
                 </button>
 
-                {/* Painel opcional para ligar ao Supabase directamente no Login quando não há Secrets */}
-                {showCloudConfigBox ? (
+                {/* Fallback exibido apenas se nenhuma ligação Supabase estiver configurada ainda */}
+                {showCloudConfigBox && (
                   <div className="mt-3 p-3.5 bg-[#f7fbf8] border border-[#cde6d5] rounded-xl space-y-2.5 text-xs">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-[#055827] flex items-center gap-1.5">
@@ -812,295 +664,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       Guardar Ligação e Entrar
                     </button>
                   </div>
-                ) : (
-                  <div className="flex justify-center pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowCloudConfigBox(true)}
-                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#4b6755] hover:text-[#067836] cursor-pointer"
-                    >
-                      <Cloud className="w-3 h-3" />
-                      <span>{isPt ? 'Configurar ligação Supabase neste navegador' : 'Configure Supabase connection'}</span>
-                    </button>
-                  </div>
                 )}
               </form>
-            )}
-
-            {/* FORMULÁRIO DE CADASTRO */}
-            {authMode === 'register' && (
-              <form onSubmit={handleRegisterSubmit} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-[#0b2316] mb-1">
-                    {isPt ? 'Nome Completo*' : 'Full Name*'}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={registerFullName}
-                    onChange={(e) => setRegisterFullName(e.target.value)}
-                    placeholder="Ex.: Ana Paula Mateus"
-                    className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-xs font-semibold text-[#0b2316]">
-                      {isPt ? 'Instituição de Ensino*' : 'School / Institution*'}
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setIsCreatingNewSchool(!isCreatingNewSchool)}
-                      className="text-xs text-[#067836] hover:text-[#045c29] font-semibold hover:underline cursor-pointer"
-                    >
-                      {isCreatingNewSchool
-                        ? isPt
-                          ? 'Selecionar existente'
-                          : 'Select existing'
-                        : isPt
-                        ? '+ Registar nova escola'
-                        : '+ Register new school'}
-                    </button>
-                  </div>
-
-                  {isCreatingNewSchool ? (
-                    <input
-                      type="text"
-                      required
-                      value={registerCustomInstName}
-                      onChange={(e) => setRegisterCustomInstName(e.target.value)}
-                      placeholder={isPt ? 'Nome oficial da escola ou colégio' : 'Official school name'}
-                      className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
-                    />
-                  ) : (
-                    <select
-                      value={registerInstitutionId}
-                      onChange={(e) => setRegisterInstitutionId(e.target.value)}
-                      className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-xs font-medium border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition cursor-pointer"
-                    >
-                      {institutions.map((inst) => (
-                        <option key={inst.id} value={inst.id}>
-                          {inst.name} ({inst.province})
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-
-                {!isCreatingNewSchool && (
-                  <div>
-                    <label className="block text-xs font-semibold text-[#0b2316] mb-1">
-                      {isPt ? 'Perfil de Acesso*' : 'Access Role*'}
-                    </label>
-                    <select
-                      value={registerRole}
-                      onChange={(e) => setRegisterRole(e.target.value as any)}
-                      className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-xs font-medium border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition cursor-pointer"
-                    >
-                      <option value="director_geral">Administrador Escolar / Direcção</option>
-                      <option value="professor">Professor / Docente</option>
-                      <option value="aluno">Aluno / Estudante (Portal Restrito)</option>
-                      <option value="encarregado_educacao">Encarregado de Educação (Portal Restrito)</option>
-                    </select>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#0b2316] mb-1">
-                    {isPt ? 'Endereço de E-mail*' : 'Email Address*'}
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={registerEmail}
-                    onChange={(e) => setRegisterEmail(e.target.value)}
-                    placeholder="utilizador@escola.ao"
-                    className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#0b2316] mb-1">
-                      {isPt ? 'Palavra-passe*' : 'Password*'}
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      value={registerPassword}
-                      onChange={(e) => setRegisterPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-[#0b2316] mb-1">
-                      {isPt ? 'Confirmar*' : 'Confirm*'}
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      value={registerConfirmPassword}
-                      onChange={(e) => setRegisterConfirmPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full min-h-[42px] bg-[#f7fbf8] text-[#0b2316] rounded-xl px-3.5 py-2 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full min-h-[46px] py-2.5 px-5 bg-gradient-to-r from-[#06823b] to-[#159b48] hover:from-[#056b30] hover:to-[#11833c] text-white font-bold text-sm rounded-xl shadow-[0_6px_18px_rgba(6,120,54,0.28)] transition-all cursor-pointer inline-flex items-center justify-center gap-2 mt-1"
-                >
-                  <span>{isPt ? 'Criar Conta' : 'Create Account'}</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </form>
-            )}
-
-            {/* SEPARADOR "ou" */}
-            <div className="relative my-4 flex items-center">
-              <div className="flex-grow border-t border-[#dce7df]" />
-              <span className="px-3 text-xs font-medium text-[#4b6755]">
-                {isPt ? 'ou' : 'or'}
-              </span>
-              <div className="flex-grow border-t border-[#dce7df]" />
-            </div>
-
-            {/* BOTÃO SECUNDÁRIO CONTORNADO: ALTERNAR MODO / CRIAR CONTA */}
-            <button
-              type="button"
-              onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-              className="w-full min-h-[44px] py-2.5 px-4 bg-white hover:bg-[#f7fbf8] border border-[#cde6d5] hover:border-[#067836] text-[#0b2316] font-semibold text-sm rounded-xl transition cursor-pointer flex items-center justify-center gap-2"
-            >
-              {authMode === 'login' ? (
-                <>
-                  <UserPlus className="w-4 h-4 text-[#067836]" />
-                  <span>{isPt ? 'Criar Nova Conta Institucional' : 'Create Institutional Account'}</span>
-                </>
-              ) : (
-                <>
-                  <LogIn className="w-4 h-4 text-[#067836]" />
-                  <span>{isPt ? 'Já tenho conta · Iniciar Sessão' : 'Already have an account · Sign In'}</span>
-                </>
-              )}
-            </button>
 
             {/* FAIXA DE SEGURANÇA DENTRO DO CARTÃO */}
-            <div className="mt-4 bg-[#e7f6ec] border border-[#cde6d5] text-[#055827] rounded-xl py-2 px-3 flex items-center justify-center gap-2 text-xs font-semibold">
+            <div className="mt-5 bg-[#e7f6ec] border border-[#cde6d5] text-[#055827] rounded-xl py-2.5 px-3 flex items-center justify-center gap-2 text-xs font-semibold">
               <ShieldCheck className="w-4 h-4 text-[#067836] shrink-0" />
               <span>
-                {isPt ? 'Sistema Seguro · Dados Protegidos' : 'Secure System · Protected Data'}
+                {isCloudReady
+                  ? isPt
+                    ? 'Ligação Permanente Activa · Dados Protegidos'
+                    : 'Permanent Cloud Link Active · Protected Data'
+                  : isPt
+                  ? 'Sistema Seguro · Dados Protegidos'
+                  : 'Secure System · Protected Data'}
               </span>
             </div>
-          </div>
-
-          {/* ACESSO RÁPIDO A CREDENCIAIS DE DEMONSTRAÇÃO */}
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => setShowDemoAccounts(!showDemoAccounts)}
-              className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-white/90 hover:bg-white border border-[#cde6d5] text-[#055827] text-xs font-semibold flex items-center justify-between shadow-2xs transition cursor-pointer"
-            >
-              <span>
-                {isPt
-                  ? `Acesso rápido · Contas de demonstração (${accounts.length})`
-                  : `Quick access · Demo accounts (${accounts.length})`}
-              </span>
-              {showDemoAccounts ? (
-                <ChevronUp className="w-4 h-4 text-[#067836]" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-[#067836]" />
-              )}
-            </button>
-
-            {showDemoAccounts && (
-              <div className="mt-2 bg-white rounded-2xl p-3 border border-[#dce7df] shadow-lg space-y-1.5">
-                <button
-                  type="button"
-                  onClick={() => handlePrefillCredentials(DEFAULT_ACCOUNTS[2])}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Director Geral (Admin da Escola)</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">direcao@sagradaesperanca.ao · senha: 123</span>
-                  </div>
-                  <Building2 className="w-4 h-4 text-[#067836] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handlePrefillCredentials(DEFAULT_ACCOUNTS[1])}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Director Municipal da Educação (Kilamba Kiaxi)</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">director.municipal@neuroeduca.ao · senha: 123</span>
-                  </div>
-                  <Building2 className="w-4 h-4 text-[#1d8cf8] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handlePrefillCredentials(DEFAULT_ACCOUNTS[0])}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Super Admin SaaS</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">admin.geral@neuroeduca.ao · senha: admin</span>
-                  </div>
-                  <ShieldCheck className="w-4 h-4 text-[#1d8cf8] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handlePrefillCredentials(DEFAULT_ACCOUNTS[4])}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Professor / Docente</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">professor@sagradaesperanca.ao · senha: 123</span>
-                  </div>
-                  <GraduationCap className="w-4 h-4 text-[#16a34a] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const acc =
-                      DEFAULT_ACCOUNTS.find((a) => a.email === 'aluno@sagradaesperanca.ao') ||
-                      DEFAULT_ACCOUNTS[7];
-                    handlePrefillCredentials(acc);
-                  }}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Aluno (Portal Restrito — Dados Próprios)</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">aluno@sagradaesperanca.ao · senha: 123</span>
-                  </div>
-                  <User className="w-4 h-4 text-[#7c3aed] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const acc =
-                      DEFAULT_ACCOUNTS.find((a) => a.email === 'encarregado@sagradaesperanca.ao') ||
-                      DEFAULT_ACCOUNTS[10];
-                    handlePrefillCredentials(acc);
-                  }}
-                  className="w-full min-h-[44px] text-left p-2.5 rounded-xl hover:bg-[#eaf6ee] flex items-center justify-between border border-slate-100 hover:border-[#cde6d5] cursor-pointer transition"
-                >
-                  <div>
-                    <strong className="block text-[#0b2316] text-xs">Encarregado de Educação (Apenas Educandos)</strong>
-                    <span className="text-[11px] text-[#4b6755] font-mono">encarregado@sagradaesperanca.ao · senha: 123</span>
-                  </div>
-                  <User className="w-4 h-4 text-[#067836] shrink-0" />
-                </button>
-              </div>
-            )}
           </div>
         </section>
       </main>
@@ -1148,16 +727,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             <div className="p-5">
               <p className="text-xs text-[#4b6755] mb-4 leading-relaxed">
                 {isPt
-                  ? 'Para redefinir a palavra-passe da sua conta institucional, utilize as credenciais padrão do ambiente local ou contacte a direcção da sua instituição escolar.'
-                  : 'To reset your institutional account password, use the default local environment credentials or contact your school administration.'}
+                  ? 'Para redefinir ou recuperar a palavra-passe da sua conta institucional, contacte a direcção ou o Administrador da sua instituição escolar (ou o Super Administrador do sistema).'
+                  : 'To reset or recover your institutional account password, please contact your School Administrator or System Super Administrator.'}
               </p>
-              <div className="p-3 bg-[#f3f7f4] rounded-xl text-xs space-y-1.5 mb-4 border border-[#cde6d5]">
-                <span className="block font-semibold text-[#0b2316]">
-                  {isPt ? 'Palavras-passe de Demonstração:' : 'Demo Passwords:'}
-                </span>
-                <span className="block text-[#4b6755] font-mono">director / prof / aluno: 123</span>
-                <span className="block text-[#4b6755] font-mono">super admin: admin</span>
-              </div>
               <button
                 onClick={() => setShowForgotModal(false)}
                 className="w-full min-h-[44px] py-2 bg-gradient-to-r from-[#06823b] to-[#159b48] hover:from-[#056b30] hover:to-[#11833c] text-white rounded-xl text-xs font-bold transition cursor-pointer"

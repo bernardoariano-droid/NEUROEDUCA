@@ -200,13 +200,54 @@ app.post('/api/sync', (req: Request, res: Response) => {
 // INTEGRAÇÃO SEGURA COM SUPABASE POSTGRESQL
 // ==========================================
 
+function getSavedServerSupabaseConfig(): {
+  url: string;
+  anonKey: string;
+  autoSync: boolean;
+} | null {
+  const store = readStore();
+  const cfg = store?.supabaseConfig;
+  if (!cfg?.url || !cfg?.anonKey) return null;
+  try {
+    return {
+      url: normalizeSupabaseUrl(String(cfg.url)),
+      anonKey: String(cfg.anonKey).trim(),
+      autoSync: cfg.autoSync !== false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistServerSupabaseConfig(url: string, anonKey: string, autoSync = true) {
+  const normalizedUrl = normalizeSupabaseUrl(url);
+  const cleanKey = String(anonKey || '').trim();
+  if (!normalizedUrl || !cleanKey) return null;
+  const store = readStore();
+  const nextConfig = {
+    url: normalizedUrl,
+    anonKey: cleanKey,
+    autoSync: Boolean(autoSync),
+    updatedAt: new Date().toISOString(),
+  };
+  writeStore({
+    ...store,
+    supabaseConfig: nextConfig,
+  });
+  return nextConfig;
+}
+
 function resolveSupabaseCredentials(body?: { url?: string; anonKey?: string }) {
-  const rawUrl = String(
-    body?.url || process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
+  const envUrl = String(
+    process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
   ).trim();
-  const rawKey = String(
-    body?.anonKey || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
+  const envKey = String(
+    process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
   ).trim();
+  const saved = getSavedServerSupabaseConfig();
+
+  const rawUrl = String(body?.url || envUrl || saved?.url || '').trim();
+  const rawKey = String(body?.anonKey || envKey || saved?.anonKey || '').trim();
   const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 
   if (!rawUrl || !rawKey) {
@@ -247,29 +288,79 @@ app.get('/api/supabase/status', (_req: Request, res: Response) => {
     const rawEnvKey = String(
       process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
     ).trim();
+    const saved = getSavedServerSupabaseConfig();
 
-    if (!rawEnvUrl || !rawEnvKey) {
+    const configuredViaEnv = Boolean(rawEnvUrl && rawEnvKey);
+    const activeUrl = rawEnvUrl || saved?.url || '';
+    const activeKey = rawEnvKey || saved?.anonKey || '';
+
+    if (!activeUrl || !activeKey) {
       return res.json({
         serverConfigured: false,
+        configuredViaEnv: false,
         urlHost: null,
         normalizedUrl: '',
+        publicUrl: '',
+        publicAnonKey: '',
       });
     }
 
-    const normalizedUrl = normalizeSupabaseUrl(rawEnvUrl);
+    const normalizedUrl = normalizeSupabaseUrl(activeUrl);
     const parsed = new URL(normalizedUrl);
 
     return res.json({
       serverConfigured: true,
+      configuredViaEnv,
       urlHost: parsed.hostname,
       normalizedUrl,
+      publicUrl: normalizedUrl,
+      publicAnonKey: activeKey,
     });
   } catch (err: any) {
     return res.json({
       serverConfigured: false,
+      configuredViaEnv: false,
       urlHost: null,
       normalizedUrl: '',
+      publicUrl: '',
+      publicAnonKey: '',
       error: err?.message || 'Configuração Supabase inválida no servidor.',
+    });
+  }
+});
+
+app.post('/api/supabase/config', (req: Request, res: Response) => {
+  try {
+    const rawUrl = String(req.body?.url || '').trim();
+    const rawKey = String(req.body?.anonKey || '').trim();
+    const autoSync = req.body?.autoSync !== false;
+
+    if (!rawUrl || !rawKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Forneça o URL do projecto Supabase e a Chave Pública (anon/publishable).',
+      });
+    }
+
+    const saved = persistServerSupabaseConfig(rawUrl, rawKey, autoSync);
+    if (!saved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Credenciais Supabase inválidas.',
+      });
+    }
+
+    const parsed = new URL(saved.url);
+    return res.json({
+      success: true,
+      serverConfigured: true,
+      urlHost: parsed.hostname,
+      normalizedUrl: saved.url,
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      message: err?.message || 'URL do Supabase inválido.',
     });
   }
 });
@@ -289,6 +380,13 @@ app.post('/api/supabase/test', async (req: Request, res: Response) => {
       creds.serviceRoleKey || creds.anonKey,
       creds.serviceRoleKey ? undefined : extractBearerToken(req)
     );
+    if (health.success && req.body?.url && req.body?.anonKey) {
+      try {
+        persistServerSupabaseConfig(creds.url, creds.anonKey, true);
+      } catch {
+        // Ignora erro ao persistir em ambiente read-only
+      }
+    }
     return res.json(health);
   } catch (err: any) {
     return res.status(400).json({
@@ -312,17 +410,26 @@ app.post('/api/supabase/push', async (req: Request, res: Response) => {
       });
     }
 
+    if (req.body?.url && req.body?.anonKey) {
+      try {
+        persistServerSupabaseConfig(creds.url, creds.anonKey, true);
+      } catch {
+        // Ignora erro ao persistir em ambiente read-only
+      }
+    }
+
     const store = readStore();
     const bundle = req.body?.bundle || store;
     const client = createServerSupabaseClient(creds, req);
     const result = await pushBundleToSupabase(client, bundle);
 
     if (result.success) {
+      const latestStore = readStore();
       writeStore({
-        ...store,
+        ...latestStore,
         ...(req.body?.bundle || {}),
         cloudLastSyncAt: result.syncedAt,
-        updatedAt: store.updatedAt || result.syncedAt,
+        updatedAt: latestStore.updatedAt || result.syncedAt,
       });
     }
 

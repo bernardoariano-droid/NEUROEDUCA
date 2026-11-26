@@ -50,6 +50,9 @@ export interface ServerSupabaseStatus {
   publicAnonKey?: string;
 }
 
+declare const __PUBLIC_SUPABASE_URL__: string;
+declare const __PUBLIC_SUPABASE_ANON_KEY__: string;
+
 const SUPABASE_CONFIG_KEY = 'neuroeduca_supabase_config';
 
 export function normalizeSupabaseUrlSafe(rawUrl: string): string {
@@ -64,8 +67,16 @@ export function normalizeSupabaseUrlSafe(rawUrl: string): string {
 }
 
 export function getSupabaseConfig(): SupabaseConfig {
-  const envUrl = normalizeSupabaseUrlSafe((import.meta as any).env?.VITE_SUPABASE_URL || '');
-  const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+  const injectedUrl =
+    typeof __PUBLIC_SUPABASE_URL__ !== 'undefined' ? __PUBLIC_SUPABASE_URL__ : '';
+  const injectedKey =
+    typeof __PUBLIC_SUPABASE_ANON_KEY__ !== 'undefined' ? __PUBLIC_SUPABASE_ANON_KEY__ : '';
+  const envUrl = normalizeSupabaseUrlSafe(
+    (import.meta as any).env?.VITE_SUPABASE_URL || injectedUrl || ''
+  );
+  const envKey = String(
+    (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || injectedKey || ''
+  ).trim();
 
   if (typeof window === 'undefined') {
     return {
@@ -81,12 +92,14 @@ export function getSupabaseConfig(): SupabaseConfig {
     const saved = localStorage.getItem(SUPABASE_CONFIG_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as Partial<SupabaseConfig>;
-      const normalizedSavedUrl = normalizeSupabaseUrlSafe(parsed.url || envUrl);
+      const hasEnv = Boolean(envUrl && envKey);
+      const normalizedSavedUrl = normalizeSupabaseUrlSafe(hasEnv ? envUrl : parsed.url || envUrl);
+      const resolvedKey = String(hasEnv ? envKey : parsed.anonKey || envKey || '').trim();
       return {
         url: normalizedSavedUrl,
-        anonKey: String(parsed.anonKey || envKey || '').trim(),
-        isConnected: Boolean(parsed.isConnected),
-        autoSync: Boolean(parsed.autoSync),
+        anonKey: resolvedKey,
+        isConnected: hasEnv ? true : Boolean(parsed.isConnected && normalizedSavedUrl && resolvedKey),
+        autoSync: hasEnv ? true : Boolean(parsed.autoSync),
         lastSyncAt: parsed.lastSyncAt || null,
         syncStatusMessage: parsed.syncStatusMessage
       };

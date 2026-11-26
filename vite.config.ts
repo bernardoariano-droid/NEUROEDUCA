@@ -1,11 +1,24 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const publicSupabaseUrl = String(env.VITE_SUPABASE_URL || env.SUPABASE_URL || '')
+    .trim()
+    .replace(/\/rest\/v1\/?$/i, '')
+    .replace(/\/+$/, '');
+  const publicSupabaseAnonKey = String(
+    env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || ''
+  ).trim();
+
   return {
+    define: {
+      __PUBLIC_SUPABASE_URL__: JSON.stringify(publicSupabaseUrl),
+      __PUBLIC_SUPABASE_ANON_KEY__: JSON.stringify(publicSupabaseAnonKey),
+    },
     plugins: [
       react(),
       tailwindcss(),

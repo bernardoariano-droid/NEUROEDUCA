@@ -716,7 +716,9 @@ export const DocumentCenter: React.FC<DocumentCenterProps> = ({
                   , {activeStudent.gender === 'M' ? 'filho' : 'filha'} de{' '}
                   <strong>{activeStudent.fatherName || 'Pai não declarado'}</strong> e de{' '}
                   <strong>{activeStudent.motherName || 'Mãe não declarada'}</strong>, nascido(a) aos{' '}
-                  <strong>{formatAngolaDate(activeStudent.birthDate)}</strong>, natural do Município de{' '}
+                  <strong>
+                    {activeStudent.birthDate ? formatAngolaDate(activeStudent.birthDate) : 'Data constante do processo'}
+                  </strong>, natural do Município de{' '}
                   <strong>{activeStudent.birthMunicipality}</strong>, Província de{' '}
                   <strong>{activeStudent.birthProvince}</strong>, portador(a) do Bilhete de Identidade n.º{' '}
                   <strong className="font-mono">{activeStudent.identityCardNumber || 'Constante do Processo'}</strong>,
@@ -950,7 +952,9 @@ export const DocumentCenter: React.FC<DocumentCenterProps> = ({
                   <strong className="uppercase">{activeStudent.fullName}</strong>, {activeStudent.gender === 'M' ? 'filho' : 'filha'} de{' '}
                   <strong>{activeStudent.fatherName || 'Pai não declarado'}</strong> e de{' '}
                   <strong>{activeStudent.motherName || 'Mãe não declarada'}</strong>, nascido(a) aos{' '}
-                  <strong>{formatAngolaDate(activeStudent.birthDate)}</strong>, portador(a) do B.I. n.º{' '}
+                  <strong>
+                    {activeStudent.birthDate ? formatAngolaDate(activeStudent.birthDate) : 'Data constante do processo'}
+                  </strong>, portador(a) do B.I. n.º{' '}
                   <strong className="font-mono">{activeStudent.identityCardNumber || 'Constante do Processo'}</strong>, matriculado(a) sob o Processo n.º{' '}
                   <strong className="font-mono">{activeStudent.processNumber}</strong>, obteve na{' '}
                   <strong>{activeStudent.gradeLevel}</strong>{activeStudent.courseName ? ` (${activeStudent.courseName})` : ''}, no Ano Lectivo de{' '}
@@ -1015,7 +1019,9 @@ export const DocumentCenter: React.FC<DocumentCenterProps> = ({
                     {activeStudent.gender === 'M' ? 'filho' : 'filha'} de{' '}
                     <strong>{activeStudent.fatherName || 'Pai não declarado'}</strong> e de{' '}
                     <strong>{activeStudent.motherName || 'Mãe não declarada'}</strong>, nascido(a) aos{' '}
-                    <strong>{formatAngolaDate(activeStudent.birthDate)}</strong>, natural de{' '}
+                    <strong>
+                      {activeStudent.birthDate ? formatAngolaDate(activeStudent.birthDate) : 'Data constante do processo'}
+                    </strong>, natural de{' '}
                     <strong>{activeStudent.birthMunicipality}</strong>, Província de{' '}
                     <strong>{activeStudent.birthProvince}</strong>, portador(a) do Bilhete de Identidade n.º{' '}
                     <strong className="font-mono">{activeStudent.identityCardNumber || 'Constante do Processo'}</strong>,

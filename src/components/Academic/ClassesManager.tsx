@@ -59,6 +59,7 @@ interface ClassesManagerProps {
   onAddSubject?: (subject: SchoolSubject) => void;
   onAddClass: (newClass: ClassRoom) => void;
   onUpdateClass?: (updatedClass: ClassRoom) => void;
+  onDeleteClass?: (classId: string) => void;
   onNavigateTab?: (tab: string) => void;
   onOpenClassEvaluations?: (classId: string, evalTab: 'mini_pauta' | 'pauta_geral') => void;
   initialOpenModal?: boolean;
@@ -79,6 +80,7 @@ export const ClassesManager: React.FC<ClassesManagerProps> = ({
   onAddSubject,
   onAddClass,
   onUpdateClass,
+  onDeleteClass,
   onNavigateTab,
   onOpenClassEvaluations,
   initialOpenModal = false,
@@ -93,6 +95,7 @@ export const ClassesManager: React.FC<ClassesManagerProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('todas');
   const [isModalOpen, setIsModalOpen] = useState(initialOpenModal);
   const [editingClass, setEditingClass] = useState<ClassRoom | null>(null);
+  const [classToDelete, setClassToDelete] = useState<ClassRoom | null>(null);
   const [selectedClassRoster, setSelectedClassRoster] = useState<ClassRoom | null>(null);
   const [limitNotice, setLimitNotice] = useState<string | null>(null);
   const rosterRef = useRef<HTMLDivElement>(null);
@@ -951,15 +954,28 @@ export const ClassesManager: React.FC<ClassesManagerProps> = ({
                   )}
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {!isSuperAdmin && !isProfessor && onUpdateClass && (
                     <button
+                      type="button"
                       onClick={() => openEditClassModal(cls)}
                       className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#f7fbf8] hover:bg-[#eaf6ee] border border-[#cde6d5] text-[#055827] font-bold inline-flex items-center space-x-1 cursor-pointer transition"
                       title="Editar turma"
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                       <span>Editar</span>
+                    </button>
+                  )}
+
+                  {!isSuperAdmin && !isProfessor && onDeleteClass && (
+                    <button
+                      type="button"
+                      onClick={() => setClassToDelete(cls)}
+                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-bold inline-flex items-center space-x-1 cursor-pointer transition"
+                      title="Apagar turma"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Apagar</span>
                     </button>
                   )}
 
@@ -1548,6 +1564,67 @@ export const ClassesManager: React.FC<ClassesManagerProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação para Apagar Turma */}
+      {classToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-red-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-red-600 text-white px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-bold text-sm flex items-center space-x-2">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Confirmar Remoção de Turma</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setClassToDelete(null)}
+                className="text-white/80 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 text-xs text-slate-700">
+              <p>
+                Tem a certeza que deseja apagar a turma{' '}
+                <strong className="text-slate-900">
+                  {classToDelete.name} ({classToDelete.code})
+                </strong>
+                ?
+              </p>
+              {students.filter((s) => s.institutionId === currentInstitution.id && s.classId === classToDelete.id).length > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900">
+                  Atenção: Esta turma possui{' '}
+                  <strong>
+                    {students.filter((s) => s.institutionId === currentInstitution.id && s.classId === classToDelete.id).length}
+                  </strong>{' '}
+                  aluno(s) matriculado(s). Os alunos permanecerão registados sem turma atribuída para poderem ser reenquadrados.
+                </div>
+              )}
+              <div className="pt-2 flex items-center justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setClassToDelete(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = classToDelete;
+                    setClassToDelete(null);
+                    onDeleteClass?.(target.id);
+                    setLimitNotice(`Turma "${target.name}" removida com sucesso.`);
+                    setTimeout(() => setLimitNotice(null), 4000);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                >
+                  Apagar Turma
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

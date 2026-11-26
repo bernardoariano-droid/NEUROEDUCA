@@ -739,6 +739,128 @@ export default function App() {
     });
   };
 
+  const handleUpdateStudent = (updatedStudent: Student) => {
+    const updatedStudents = students.map((s) =>
+      s.id === updatedStudent.id ? updatedStudent : s
+    );
+    setStudents(updatedStudents);
+
+    const updatedClasses = classes.map((c) => {
+      if (c.institutionId !== updatedStudent.institutionId) return c;
+      const count = updatedStudents.filter(
+        (s) => s.institutionId === c.institutionId && s.classId === c.id
+      ).length;
+      return { ...c, enrolledStudentsCount: count };
+    });
+    setClasses(updatedClasses);
+
+    const updatedGrades = grades.map((g) =>
+      g.studentId === updatedStudent.id
+        ? {
+            ...g,
+            studentName: updatedStudent.fullName,
+            studentProcessNumber: updatedStudent.processNumber,
+            classId: updatedStudent.classId
+          }
+        : g
+    );
+    setGrades(updatedGrades);
+
+    const updatedInvoices = invoices.map((inv) =>
+      inv.studentId === updatedStudent.id
+        ? {
+            ...inv,
+            studentName: updatedStudent.fullName,
+            studentProcessNumber: updatedStudent.processNumber
+          }
+        : inv
+    );
+    setInvoices(updatedInvoices);
+
+    if (updatedStudent.email) {
+      storageService.upsertAccount({
+        email: updatedStudent.email,
+        password: updatedStudent.portalPassword || '123',
+        fullName: `${updatedStudent.fullName} (Estudante)`,
+        role: 'aluno',
+        institutionId: updatedStudent.institutionId,
+        institutionName: currentInstitution?.name,
+        status: 'activo'
+      });
+    }
+    const latestAccounts = storageService.getAccounts();
+    setAccounts(latestAccounts);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: updatedStudent.institutionId,
+      institutionName: currentInstitution?.name,
+      userName: currentUser?.fullName || 'Secretaria Geral',
+      userRole: currentUser?.role || 'Secretário Geral',
+      action: 'ACTUALIZACAO_ALUNO',
+      details: `Actualização dos dados do aluno ${updatedStudent.fullName} (Processo nº ${updatedStudent.processNumber}).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({
+      students: updatedStudents,
+      classes: updatedClasses,
+      grades: updatedGrades,
+      invoices: updatedInvoices,
+      accounts: latestAccounts,
+      auditLogs: updatedLogs
+    });
+  };
+
+  const handleDeleteStudent = (studentId: string) => {
+    const targetStudent = students.find((s) => s.id === studentId);
+    if (!targetStudent) return;
+
+    const updatedStudents = students.filter((s) => s.id !== studentId);
+    setStudents(updatedStudents);
+
+    const updatedClasses = classes.map((c) => {
+      if (c.institutionId !== targetStudent.institutionId) return c;
+      const count = updatedStudents.filter(
+        (s) => s.institutionId === c.institutionId && s.classId === c.id
+      ).length;
+      return { ...c, enrolledStudentsCount: count };
+    });
+    setClasses(updatedClasses);
+
+    const updatedInstitutions = institutions.map((inst) => {
+      if (inst.id !== targetStudent.institutionId) return inst;
+      const instCount = updatedStudents.filter((s) => s.institutionId === inst.id).length;
+      return { ...inst, currentStudentsCount: instCount };
+    });
+    setInstitutions(updatedInstitutions);
+
+    const updatedCurrInst = updatedInstitutions.find((i) => i.id === currentInstitution?.id);
+    if (updatedCurrInst) setCurrentInstitution(updatedCurrInst);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: targetStudent.institutionId,
+      institutionName: currentInstitution?.name,
+      userName: currentUser?.fullName || 'Secretaria Geral',
+      userRole: currentUser?.role || 'Secretário Geral',
+      action: 'REMOCAO_ALUNO',
+      details: `Remoção do registo do aluno ${targetStudent.fullName} (Processo nº ${targetStudent.processNumber}).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({
+      students: updatedStudents,
+      classes: updatedClasses,
+      institutions: updatedInstitutions,
+      auditLogs: updatedLogs
+    });
+  };
+
   // Handlers para Turmas (Responsabilidade Exclusiva do Administrador Escolar)
   const handleAddClass = (newClass: ClassRoom) => {
     if (!isSchoolAdminRole) {
@@ -792,6 +914,20 @@ export default function App() {
     const updatedClasses = classes.map((c) => (c.id === updatedClass.id ? updatedClass : c));
     setClasses(updatedClasses);
 
+    const updatedStudents = students.map((s) =>
+      s.classId === updatedClass.id
+        ? {
+            ...s,
+            className: updatedClass.name,
+            gradeLevel: updatedClass.gradeLevel,
+            subsystemCode: updatedClass.subsystemCode,
+            courseName: updatedClass.courseName,
+            shift: updatedClass.shift
+          }
+        : s
+    );
+    setStudents(updatedStudents);
+
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
       institutionId: updatedClass.institutionId,
@@ -805,7 +941,66 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ classes: updatedClasses, auditLogs: updatedLogs });
+    persistState({ classes: updatedClasses, students: updatedStudents, auditLogs: updatedLogs });
+  };
+
+  const handleDeleteClass = (classId: string) => {
+    if (!isSchoolAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: A remoção de turmas é da inteira responsabilidade do Administrador Escolar.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
+    const targetClass = classes.find((c) => c.id === classId);
+    if (!targetClass) return;
+
+    const updatedClasses = classes.filter((c) => c.id !== classId);
+    setClasses(updatedClasses);
+
+    const updatedStudents = students.map((s) =>
+      s.classId === classId
+        ? { ...s, classId: '', className: 'Sem Turma Atribuída' }
+        : s
+    );
+    setStudents(updatedStudents);
+
+    const updatedTeachers = teachers.map((t) => ({
+      ...t,
+      assignedClasses: (t.assignedClasses || []).filter((a) => a.classId !== classId)
+    }));
+    setTeachers(updatedTeachers);
+
+    const updatedInstitutions = institutions.map((inst) => {
+      if (inst.id !== targetClass.institutionId) return inst;
+      const clsCount = updatedClasses.filter((c) => c.institutionId === inst.id).length;
+      return { ...inst, currentClassesCount: clsCount };
+    });
+    setInstitutions(updatedInstitutions);
+
+    const updatedCurrInst = updatedInstitutions.find((i) => i.id === currentInstitution?.id);
+    if (updatedCurrInst) setCurrentInstitution(updatedCurrInst);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: targetClass.institutionId,
+      institutionName: currentInstitution?.name,
+      userName: currentUser?.fullName || 'Direcção Pedagógica',
+      userRole: 'Administrador Escolar',
+      action: 'REMOCAO_TURMA',
+      details: `Remoção da turma ${targetClass.name} (Código ${targetClass.code}).`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    persistState({
+      classes: updatedClasses,
+      students: updatedStudents,
+      teachers: updatedTeachers,
+      institutions: updatedInstitutions,
+      auditLogs: updatedLogs
+    });
   };
 
   // Handlers para Cadastramento de Disciplinas (Exclusivo Administrador Escolar)
@@ -1368,29 +1563,45 @@ export default function App() {
     const updatedStudents = [...newStudentsList, ...students];
     setStudents(updatedStudents);
 
-    const countPerClass: Record<string, number> = {};
-    newStudentsList.forEach((s) => {
-      countPerClass[s.classId] = (countPerClass[s.classId] || 0) + 1;
+    const updatedClasses = classes.map((c) => {
+      if (currentInstitution && c.institutionId !== currentInstitution.id) return c;
+      const count = updatedStudents.filter(
+        (s) => s.institutionId === c.institutionId && s.classId === c.id
+      ).length;
+      return { ...c, enrolledStudentsCount: count };
     });
-
-    const updatedClasses = classes.map((c) =>
-      countPerClass[c.id]
-        ? { ...c, enrolledStudentsCount: c.enrolledStudentsCount + countPerClass[c.id] }
-        : c
-    );
     setClasses(updatedClasses);
 
     let updatedInstitutions = institutions;
     if (currentInstitution) {
       updatedInstitutions = institutions.map((inst) =>
         inst.id === currentInstitution.id
-          ? { ...inst, currentStudentsCount: inst.currentStudentsCount + newStudentsList.length }
+          ? {
+              ...inst,
+              currentStudentsCount: updatedStudents.filter((s) => s.institutionId === inst.id).length
+            }
           : inst
       );
       setInstitutions(updatedInstitutions);
       const updatedCurrInst = updatedInstitutions.find((i) => i.id === currentInstitution.id);
       if (updatedCurrInst) setCurrentInstitution(updatedCurrInst);
     }
+
+    newStudentsList.forEach((stu) => {
+      if (stu.email) {
+        storageService.upsertAccount({
+          email: stu.email,
+          password: stu.portalPassword || '123',
+          fullName: `${stu.fullName} (Estudante)`,
+          role: 'aluno',
+          institutionId: stu.institutionId,
+          institutionName: currentInstitution?.name,
+          status: 'activo'
+        });
+      }
+    });
+    const latestAccounts = storageService.getAccounts();
+    setAccounts(latestAccounts);
 
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
@@ -1409,6 +1620,7 @@ export default function App() {
       students: updatedStudents,
       classes: updatedClasses,
       institutions: updatedInstitutions,
+      accounts: latestAccounts,
       auditLogs: updatedLogs
     });
   };
@@ -3054,6 +3266,7 @@ export default function App() {
                   onAddSubject={handleAddSubject}
                   onAddClass={handleAddClass}
                   onUpdateClass={handleUpdateClass}
+                  onDeleteClass={handleDeleteClass}
                   onNavigateTab={handleSelectTab}
                   onOpenClassEvaluations={(classId, evalTab) =>
                     handleDeepNavigate({ tab: 'evaluations', classId, evalTab })
@@ -3102,6 +3315,8 @@ export default function App() {
                   students={students}
                   classes={classes}
                   onAddStudent={handleAddStudent}
+                  onUpdateStudent={handleUpdateStudent}
+                  onDeleteStudent={handleDeleteStudent}
                   onAddMultipleStudents={handleAddMultipleStudents}
                   onOpenDocumentGenerator={handleOpenDocFromStudent}
                   initialOpenModal={Boolean(openStudentModalKey)}

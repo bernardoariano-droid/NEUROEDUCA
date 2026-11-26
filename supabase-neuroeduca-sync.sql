@@ -1,9 +1,11 @@
 -- =====================================================================
--- NEUROEDUCA - SCRIPT COMPLETO DE TABELAS, CHAVES ESTRANGEIRAS E AUTH
+-- NEUROEDUCA - SCRIPT COMPLETO DE TABELAS, CHAVES ESTRANGEIRAS, SESSÕES & RLS
 -- Execute este script no SQL Editor do seu projecto Supabase
 -- (Database > SQL Editor > New Query > Run)
 -- Seguro para executar em bancos novos OU já existentes (Idempotente).
 -- =====================================================================
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 1. Metadados de Sincronização
 CREATE TABLE IF NOT EXISTS public.neuroeduca_sync_meta (
@@ -288,6 +290,44 @@ CREATE TABLE IF NOT EXISTS public.neuroeduca_audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_ne_audit_inst ON public.neuroeduca_audit_logs(institution_id);
 
+-- 17. Protocolos Psicopedagógicos Globais (Super Admin)
+CREATE TABLE IF NOT EXISTS public.neuroeduca_psychopedagogical_protocols (
+    id TEXT PRIMARY KEY,
+    code TEXT,
+    title TEXT NOT NULL,
+    category TEXT,
+    target_subsystem TEXT,
+    is_active BOOLEAN DEFAULT true,
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 18. Dossiês & Acompanhamento Psicopedagógico por Escola -> FK Instituição & FK Aluno
+CREATE TABLE IF NOT EXISTS public.neuroeduca_psychopedagogical_cases (
+    id TEXT PRIMARY KEY,
+    institution_id TEXT NOT NULL REFERENCES public.neuroeduca_institutions(id) ON DELETE CASCADE,
+    student_id TEXT REFERENCES public.neuroeduca_students(id) ON DELETE CASCADE,
+    case_code TEXT,
+    student_name TEXT NOT NULL,
+    status TEXT DEFAULT 'em_avaliacao',
+    risk_level TEXT,
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ne_psy_cases_inst ON public.neuroeduca_psychopedagogical_cases(institution_id);
+CREATE INDEX IF NOT EXISTS idx_ne_psy_cases_student ON public.neuroeduca_psychopedagogical_cases(student_id);
+
+-- 19. Sessões Seguras de Utilizadores (Token Opaco SHA-256)
+CREATE TABLE IF NOT EXISTS public.neuroeduca_sessions (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES public.neuroeduca_accounts(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '7 days'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ne_sessions_account ON public.neuroeduca_sessions(account_id);
+REVOKE ALL ON public.neuroeduca_sessions FROM PUBLIC, anon, authenticated;
+ALTER TABLE public.neuroeduca_sessions ENABLE ROW LEVEL SECURITY;
+
 -- =====================================================================
 -- MIGRAÇÃO IDEMPOTENTE: APLICAR COLUNAS DE LIGAÇÃO E CHAVES ESTRANGEIRAS
 -- EM TABELAS JÁ EXISTENTES
@@ -501,6 +541,14 @@ BEGIN
         ALTER TABLE public.neuroeduca_audit_logs
             ADD CONSTRAINT fk_ne_audit_inst FOREIGN KEY (institution_id) REFERENCES public.neuroeduca_institutions(id) ON DELETE SET NULL;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ne_psy_cases_inst') THEN
+        ALTER TABLE public.neuroeduca_psychopedagogical_cases
+            ADD CONSTRAINT fk_ne_psy_cases_inst FOREIGN KEY (institution_id) REFERENCES public.neuroeduca_institutions(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ne_psy_cases_student') THEN
+        ALTER TABLE public.neuroeduca_psychopedagogical_cases
+            ADD CONSTRAINT fk_ne_psy_cases_student FOREIGN KEY (student_id) REFERENCES public.neuroeduca_students(id) ON DELETE CASCADE;
+    END IF;
 END $$;
 
 -- =====================================================================
@@ -631,11 +679,205 @@ CREATE TRIGGER on_auth_user_synced_to_neuroeduca
     FOR EACH ROW EXECUTE FUNCTION public.handle_auth_user_to_neuroeduca();
 
 -- =====================================================================
--- ROW LEVEL SECURITY (RLS) BLINDADA, ISOLAMENTO MULTI-TENANT & STORAGE
--- Zero acesso anónimo (anon) a tabelas/ficheiros; controlo por perfil e auth.uid()
+-- AUTENTICAÇÃO, SESSÃO SEGURA E ROW LEVEL SECURITY (RLS) MULTI-TENANT
+-- Suporta Supabase Auth (auth.uid()) E Sessões NEUROEDUCA (x-ne-session)
+-- Zero acesso não autenticado a tabelas/ficheiros; controlo estrito por perfil
 -- =====================================================================
 
--- 1. RPC segura para verificação de login (nunca expõe passwords via REST API)
+-- 1. Leitura segura do cabeçalho x-ne-session enviado pelo cliente
+CREATE OR REPLACE FUNCTION public.ne_read_session_token_header()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+    SELECT NULLIF(trim(COALESCE(
+        (current_setting('request.headers', true)::jsonb)->>'x-ne-session',
+        ''
+    )), '');
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_current_account_id()
+RETURNS TEXT
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+    v_acc_id TEXT;
+    v_uid UUID := auth.uid();
+    v_raw_token TEXT;
+    v_token_hash TEXT;
+BEGIN
+    IF v_uid IS NOT NULL THEN
+        SELECT a.id INTO v_acc_id
+        FROM public.neuroeduca_accounts a
+        WHERE a.auth_user_id = v_uid
+          AND COALESCE(a.status, 'activo') <> 'inactivo'
+        LIMIT 1;
+        IF v_acc_id IS NOT NULL THEN
+            RETURN v_acc_id;
+        END IF;
+    END IF;
+
+    v_raw_token := public.ne_read_session_token_header();
+    IF v_raw_token IS NOT NULL THEN
+        v_token_hash := encode(digest(v_raw_token, 'sha256'), 'hex');
+        SELECT a.id INTO v_acc_id
+        FROM public.neuroeduca_sessions s
+        JOIN public.neuroeduca_accounts a ON a.id = s.account_id
+        WHERE s.token_hash = v_token_hash
+          AND s.expires_at > now()
+          AND COALESCE(a.status, 'activo') <> 'inactivo'
+        LIMIT 1;
+        RETURN v_acc_id;
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+-- 2. Funções auxiliares SECURITY DEFINER baseadas na conta autenticada
+CREATE OR REPLACE FUNCTION public.ne_current_role()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(a.role, NULLIF(a.payload->>'role', ''))
+    FROM public.neuroeduca_accounts a
+    WHERE a.id = public.ne_current_account_id()
+      AND COALESCE(a.status, 'activo') <> 'inactivo'
+    LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_is_super_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(public.ne_current_role() = 'super_admin', false);
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_current_institution_id()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(a.institution_id, NULLIF(a.payload->>'institutionId', ''))
+    FROM public.neuroeduca_accounts a
+    WHERE a.id = public.ne_current_account_id()
+      AND COALESCE(a.status, 'activo') <> 'inactivo'
+    LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_current_municipality()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(a.municipality, NULLIF(a.payload->>'municipality', ''))
+    FROM public.neuroeduca_accounts a
+    WHERE a.id = public.ne_current_account_id()
+      AND COALESCE(a.status, 'activo') <> 'inactivo'
+    LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_is_school_staff()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(
+        public.ne_current_role() IN (
+            'admin_institucional',
+            'director_geral',
+            'subdirector_pedagogico',
+            'secretario_geral',
+            'coordenador_curso',
+            'director_turma',
+            'professor',
+            'funcionario_financeiro'
+        ),
+        false
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_is_school_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    SELECT COALESCE(
+        public.ne_current_role() IN (
+            'admin_institucional',
+            'director_geral',
+            'subdirector_pedagogico',
+            'secretario_geral',
+            'coordenador_curso'
+        ),
+        false
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION public.ne_current_student_ids()
+RETURNS TEXT[]
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+    WITH acc AS (
+        SELECT lower(trim(email)) AS acc_email, payload
+        FROM public.neuroeduca_accounts
+        WHERE id = public.ne_current_account_id()
+          AND COALESCE(status, 'activo') <> 'inactivo'
+        LIMIT 1
+    )
+    SELECT COALESCE(array_agg(DISTINCT s.id), ARRAY[]::TEXT[])
+    FROM public.neuroeduca_students s, acc
+    WHERE lower(COALESCE(s.payload->>'email', '')) = acc.acc_email
+       OR lower(COALESCE(s.payload->>'guardianEmail', '')) = acc.acc_email
+       OR s.id = NULLIF(acc.payload->>'linkedStudentId', '')
+       OR (
+           jsonb_typeof(acc.payload->'linkedStudentIds') = 'array'
+           AND s.id IN (SELECT jsonb_array_elements_text(acc.payload->'linkedStudentIds'))
+       );
+$$;
+
+REVOKE ALL ON FUNCTION public.ne_read_session_token_header() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_current_account_id() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_current_role() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_is_super_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_current_institution_id() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_current_municipality() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_is_school_staff() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_is_school_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ne_current_student_ids() FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.ne_current_account_id() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_current_role() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_is_super_admin() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_current_institution_id() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_current_municipality() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_is_school_staff() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_is_school_admin() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ne_current_student_ids() TO anon, authenticated;
+
+-- 3. RPCs de Autenticação, Sessão, Bootstrap & Leitura de Comunicados
 CREATE OR REPLACE FUNCTION public.verify_neuroeduca_login(
     p_email TEXT,
     p_password TEXT
@@ -650,12 +892,14 @@ DECLARE
     v_acc RECORD;
     v_stored_pw TEXT;
     v_valid BOOLEAN := false;
+    v_raw_token TEXT;
+    v_token_hash TEXT;
 BEGIN
     IF v_clean_email = '' OR COALESCE(p_password, '') = '' THEN
         RETURN jsonb_build_object('authenticated', false);
     END IF;
 
-    SELECT email, full_name, role, institution_id, municipality, province, status, payload
+    SELECT id, email, full_name, role, institution_id, municipality, province, status, payload
     INTO v_acc
     FROM public.neuroeduca_accounts
     WHERE id = v_clean_email
@@ -684,6 +928,55 @@ BEGIN
         RETURN jsonb_build_object('authenticated', false);
     END IF;
 
+    v_raw_token := encode(gen_random_bytes(32), 'hex');
+    v_token_hash := encode(digest(v_raw_token, 'sha256'), 'hex');
+    DELETE FROM public.neuroeduca_sessions WHERE expires_at <= now();
+    INSERT INTO public.neuroeduca_sessions (token_hash, account_id, expires_at)
+    VALUES (v_token_hash, v_acc.id, now() + interval '7 days');
+
+    RETURN jsonb_build_object(
+        'authenticated', true,
+        'sessionToken', v_raw_token,
+        'account', jsonb_build_object(
+            'email', v_acc.email,
+            'fullName', COALESCE(v_acc.full_name, v_acc.payload->>'fullName', v_acc.email),
+            'role', COALESCE(v_acc.role, v_acc.payload->>'role', 'director_geral'),
+            'institutionId', COALESCE(v_acc.institution_id, NULLIF(v_acc.payload->>'institutionId', '')),
+            'institutionName', NULLIF(v_acc.payload->>'institutionName', ''),
+            'municipality', COALESCE(v_acc.municipality, NULLIF(v_acc.payload->>'municipality', '')),
+            'province', COALESCE(v_acc.province, NULLIF(v_acc.payload->>'province', '')),
+            'status', 'activo'
+        )
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_neuroeduca_session_profile()
+RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+    v_acc_id TEXT := public.ne_current_account_id();
+    v_acc RECORD;
+BEGIN
+    IF v_acc_id IS NULL THEN
+        RETURN jsonb_build_object('authenticated', false);
+    END IF;
+
+    SELECT id, email, full_name, role, institution_id, municipality, province, status, payload
+    INTO v_acc
+    FROM public.neuroeduca_accounts
+    WHERE id = v_acc_id
+      AND COALESCE(status, 'activo') <> 'inactivo'
+    LIMIT 1;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('authenticated', false);
+    END IF;
+
     RETURN jsonb_build_object(
         'authenticated', true,
         'account', jsonb_build_object(
@@ -700,143 +993,175 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.verify_neuroeduca_login(TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.verify_neuroeduca_login(TEXT, TEXT) TO anon, authenticated;
-
--- 2. Funções auxiliares SECURITY DEFINER baseadas em auth.uid() (sem recursão nem spoofing de metadata)
-CREATE OR REPLACE FUNCTION public.ne_current_role()
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public, auth
-AS $$
-    SELECT a.role
-    FROM public.neuroeduca_accounts a
-    WHERE a.auth_user_id = auth.uid()
-      AND COALESCE(a.status, 'activo') <> 'inactivo'
-    LIMIT 1;
-$$;
-
-CREATE OR REPLACE FUNCTION public.ne_is_super_admin()
+CREATE OR REPLACE FUNCTION public.logout_neuroeduca_session(
+    p_token TEXT DEFAULT NULL
+)
 RETURNS BOOLEAN
-LANGUAGE sql
-STABLE
+LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, extensions
 AS $$
-    SELECT COALESCE(public.ne_current_role() = 'super_admin', false);
+DECLARE
+    v_token TEXT := COALESCE(NULLIF(trim(COALESCE(p_token, '')), ''), public.ne_read_session_token_header());
+BEGIN
+    IF v_token IS NOT NULL THEN
+        DELETE FROM public.neuroeduca_sessions
+        WHERE token_hash = encode(digest(v_token, 'sha256'), 'hex');
+    END IF;
+    RETURN true;
+END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.ne_current_institution_id()
-RETURNS TEXT
+CREATE OR REPLACE FUNCTION public.check_neuroeduca_bootstrap_status()
+RETURNS JSONB
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public
 AS $$
-    SELECT a.institution_id
-    FROM public.neuroeduca_accounts a
-    WHERE a.auth_user_id = auth.uid()
-      AND COALESCE(a.status, 'activo') <> 'inactivo'
-    LIMIT 1;
-$$;
-
-CREATE OR REPLACE FUNCTION public.ne_current_municipality()
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public, auth
-AS $$
-    SELECT a.municipality
-    FROM public.neuroeduca_accounts a
-    WHERE a.auth_user_id = auth.uid()
-      AND COALESCE(a.status, 'activo') <> 'inactivo'
-    LIMIT 1;
-$$;
-
-CREATE OR REPLACE FUNCTION public.ne_is_school_staff()
-RETURNS BOOLEAN
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public, auth
-AS $$
-    SELECT COALESCE(
-        public.ne_current_role() IN (
-            'admin_institucional',
-            'director_geral',
-            'subdirector_pedagogico',
-            'secretario_geral',
-            'coordenador_curso',
-            'director_turma',
-            'professor',
-            'funcionario_financeiro'
-        ),
-        false
+    SELECT jsonb_build_object(
+        'hasAccounts', EXISTS(SELECT 1 FROM public.neuroeduca_accounts),
+        'hasInstitutions', EXISTS(SELECT 1 FROM public.neuroeduca_institutions)
     );
 $$;
 
-CREATE OR REPLACE FUNCTION public.ne_is_school_admin()
-RETURNS BOOLEAN
-LANGUAGE sql
-STABLE
+CREATE OR REPLACE FUNCTION public.bootstrap_neuroeduca_super_admin(
+    p_email TEXT,
+    p_full_name TEXT,
+    p_password TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, extensions
 AS $$
-    SELECT COALESCE(
-        public.ne_current_role() IN (
-            'admin_institucional',
-            'director_geral',
-            'secretario_geral'
-        ),
-        false
-    );
-$$;
+DECLARE
+    v_clean_email TEXT := lower(trim(COALESCE(p_email, '')));
+    v_clean_name TEXT := NULLIF(trim(COALESCE(p_full_name, '')), '');
+    v_hashed_pw TEXT;
+    v_raw_token TEXT;
+    v_token_hash TEXT;
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.neuroeduca_accounts) THEN
+        RETURN jsonb_build_object(
+            'authenticated', false,
+            'alreadyInitialized', true,
+            'error', 'Já existem contas registadas neste projecto Supabase.'
+        );
+    END IF;
 
-CREATE OR REPLACE FUNCTION public.ne_current_student_ids()
-RETURNS TEXT[]
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public, auth
-AS $$
-    WITH acc AS (
-        SELECT lower(trim(email)) AS acc_email, payload
-        FROM public.neuroeduca_accounts
-        WHERE auth_user_id = auth.uid()
-          AND COALESCE(status, 'activo') <> 'inactivo'
-        LIMIT 1
+    IF v_clean_email = '' OR length(trim(COALESCE(p_password, ''))) < 3 THEN
+        RETURN jsonb_build_object(
+            'authenticated', false,
+            'error', 'Informe um e-mail válido e palavra-passe com pelo menos 3 caracteres.'
+        );
+    END IF;
+
+    v_clean_name := COALESCE(v_clean_name, 'Super Administrador');
+    v_hashed_pw := crypt(trim(p_password), gen_salt('bf'));
+
+    INSERT INTO public.neuroeduca_accounts (
+        id, email, full_name, role, institution_id, status, payload, updated_at
     )
-    SELECT COALESCE(array_agg(DISTINCT s.id), ARRAY[]::TEXT[])
-    FROM public.neuroeduca_students s, acc
-    WHERE lower(COALESCE(s.payload->>'email', '')) = acc.acc_email
-       OR lower(COALESCE(s.payload->>'guardianEmail', '')) = acc.acc_email
-       OR s.id = NULLIF(acc.payload->>'linkedStudentId', '')
-       OR (
-           jsonb_typeof(acc.payload->'linkedStudentIds') = 'array'
-           AND s.id IN (SELECT jsonb_array_elements_text(acc.payload->'linkedStudentIds'))
-       );
+    VALUES (
+        v_clean_email,
+        v_clean_email,
+        v_clean_name,
+        'super_admin',
+        NULL,
+        'activo',
+        jsonb_build_object(
+            'email', v_clean_email,
+            'password', v_hashed_pw,
+            'fullName', v_clean_name,
+            'role', 'super_admin',
+            'institutionName', 'Administração Geral SaaS NEUROEDUCA',
+            'status', 'activo'
+        ),
+        now()
+    );
+
+    v_raw_token := encode(gen_random_bytes(32), 'hex');
+    v_token_hash := encode(digest(v_raw_token, 'sha256'), 'hex');
+    INSERT INTO public.neuroeduca_sessions (token_hash, account_id, expires_at)
+    VALUES (v_token_hash, v_clean_email, now() + interval '7 days');
+
+    RETURN jsonb_build_object(
+        'authenticated', true,
+        'sessionToken', v_raw_token,
+        'account', jsonb_build_object(
+            'email', v_clean_email,
+            'fullName', v_clean_name,
+            'role', 'super_admin',
+            'institutionName', 'Administração Geral SaaS NEUROEDUCA',
+            'status', 'activo'
+        )
+    );
+END;
 $$;
 
-REVOKE ALL ON FUNCTION public.ne_current_role() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_is_super_admin() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_current_institution_id() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_current_municipality() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_is_school_staff() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_is_school_admin() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ne_current_student_ids() FROM PUBLIC;
+CREATE OR REPLACE FUNCTION public.mark_neuroeduca_announcement_read(
+    p_announcement_id TEXT,
+    p_read_key TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+    v_acc_id TEXT := public.ne_current_account_id();
+    v_clean_key TEXT := lower(trim(COALESCE(p_read_key, '')));
+    v_existing JSONB;
+BEGIN
+    IF v_acc_id IS NULL OR v_clean_key = '' OR COALESCE(p_announcement_id, '') = '' THEN
+        RETURN false;
+    END IF;
 
-GRANT EXECUTE ON FUNCTION public.ne_current_role() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_is_super_admin() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_current_institution_id() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_current_municipality() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_is_school_staff() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_is_school_admin() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.ne_current_student_ids() TO authenticated;
+    SELECT COALESCE(payload->'readByUserKeys', '[]'::jsonb)
+    INTO v_existing
+    FROM public.neuroeduca_announcements
+    WHERE id = p_announcement_id;
 
--- 3. Remover acesso anónimo (anon) e políticas permissivas em todas as 16 tabelas
+    IF NOT FOUND THEN
+        RETURN false;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(v_existing) elem
+        WHERE lower(trim(elem)) = v_clean_key
+    ) THEN
+        UPDATE public.neuroeduca_announcements
+        SET payload = jsonb_set(
+                payload,
+                '{readByUserKeys}',
+                v_existing || to_jsonb(v_clean_key),
+                true
+            ),
+            updated_at = now()
+        WHERE id = p_announcement_id;
+    END IF;
+
+    RETURN true;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.verify_neuroeduca_login(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_neuroeduca_session_profile() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.logout_neuroeduca_session(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.check_neuroeduca_bootstrap_status() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.bootstrap_neuroeduca_super_admin(TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mark_neuroeduca_announcement_read(TEXT, TEXT) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.verify_neuroeduca_login(TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_neuroeduca_session_profile() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.logout_neuroeduca_session(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.check_neuroeduca_bootstrap_status() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.bootstrap_neuroeduca_super_admin(TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_neuroeduca_announcement_read(TEXT, TEXT) TO anon, authenticated;
+
+-- 4. Configurar RLS estrita e permissões em todas as 18 tabelas de dados
 DO $$
 DECLARE
     tbl TEXT;
@@ -857,13 +1182,14 @@ DECLARE
         'neuroeduca_accounts',
         'neuroeduca_school_users',
         'neuroeduca_subscription_plans',
-        'neuroeduca_audit_logs'
+        'neuroeduca_audit_logs',
+        'neuroeduca_psychopedagogical_protocols',
+        'neuroeduca_psychopedagogical_cases'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tbl_list LOOP
         EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', tbl);
-        EXECUTE format('REVOKE ALL ON public.%I FROM anon;', tbl);
-        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO authenticated;', tbl);
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO anon, authenticated;', tbl);
         FOR pol IN
             SELECT policyname
             FROM pg_policies
@@ -874,17 +1200,18 @@ BEGIN
     END LOOP;
 END $$;
 
--- 4. Políticas RLS granulares por função, escola e processo do aluno
+-- 5. Políticas RLS granulares por função, escola e processo do aluno
+-- (Apenas pedidos com sessão válida via auth.uid() ou x-ne-session têm acesso)
 
 CREATE POLICY ne_sync_meta_read ON public.neuroeduca_sync_meta
-    FOR SELECT TO authenticated USING (true);
+    FOR SELECT TO anon, authenticated USING (public.ne_current_role() IS NOT NULL);
 CREATE POLICY ne_sync_meta_write ON public.neuroeduca_sync_meta
-    FOR ALL TO authenticated
-    USING (public.ne_is_super_admin() OR public.ne_is_school_admin())
-    WITH CHECK (public.ne_is_super_admin() OR public.ne_is_school_admin());
+    FOR ALL TO anon, authenticated
+    USING (public.ne_is_super_admin() OR public.ne_is_school_staff())
+    WITH CHECK (public.ne_is_super_admin() OR public.ne_is_school_staff());
 
 CREATE POLICY ne_institutions_select ON public.neuroeduca_institutions
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR id = public.ne_current_institution_id()
@@ -894,18 +1221,18 @@ CREATE POLICY ne_institutions_select ON public.neuroeduca_institutions
         )
     );
 CREATE POLICY ne_institutions_insert ON public.neuroeduca_institutions
-    FOR INSERT TO authenticated
+    FOR INSERT TO anon, authenticated
     WITH CHECK (public.ne_is_super_admin());
 CREATE POLICY ne_institutions_update ON public.neuroeduca_institutions
-    FOR UPDATE TO authenticated
+    FOR UPDATE TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND id = public.ne_current_institution_id()));
 CREATE POLICY ne_institutions_delete ON public.neuroeduca_institutions
-    FOR DELETE TO authenticated
+    FOR DELETE TO anon, authenticated
     USING (public.ne_is_super_admin());
 
 CREATE POLICY ne_teachers_select ON public.neuroeduca_teachers
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR institution_id = public.ne_current_institution_id()
@@ -918,12 +1245,12 @@ CREATE POLICY ne_teachers_select ON public.neuroeduca_teachers
         )
     );
 CREATE POLICY ne_teachers_write ON public.neuroeduca_teachers
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()));
 
 CREATE POLICY ne_classes_select ON public.neuroeduca_classes
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR institution_id = public.ne_current_institution_id()
@@ -936,12 +1263,12 @@ CREATE POLICY ne_classes_select ON public.neuroeduca_classes
         )
     );
 CREATE POLICY ne_classes_write ON public.neuroeduca_classes
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()));
 
 CREATE POLICY ne_subjects_select ON public.neuroeduca_subjects
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR institution_id = public.ne_current_institution_id()
@@ -954,12 +1281,12 @@ CREATE POLICY ne_subjects_select ON public.neuroeduca_subjects
         )
     );
 CREATE POLICY ne_subjects_write ON public.neuroeduca_subjects
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()));
 
 CREATE POLICY ne_students_select ON public.neuroeduca_students
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
@@ -976,12 +1303,18 @@ CREATE POLICY ne_students_select ON public.neuroeduca_students
         )
     );
 CREATE POLICY ne_students_write ON public.neuroeduca_students
-    FOR ALL TO authenticated
-    USING (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()))
-    WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()));
+    FOR ALL TO anon, authenticated
+    USING (
+        public.ne_is_super_admin()
+        OR ((public.ne_is_school_admin() OR public.ne_current_role() = 'funcionario_financeiro') AND institution_id = public.ne_current_institution_id())
+    )
+    WITH CHECK (
+        public.ne_is_super_admin()
+        OR ((public.ne_is_school_admin() OR public.ne_current_role() = 'funcionario_financeiro') AND institution_id = public.ne_current_institution_id())
+    );
 
 CREATE POLICY ne_grades_select ON public.neuroeduca_grades
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
@@ -998,12 +1331,12 @@ CREATE POLICY ne_grades_select ON public.neuroeduca_grades
         )
     );
 CREATE POLICY ne_grades_write ON public.neuroeduca_grades
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()));
 
 CREATE POLICY ne_attendance_select ON public.neuroeduca_attendance
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
@@ -1020,29 +1353,26 @@ CREATE POLICY ne_attendance_select ON public.neuroeduca_attendance
         )
     );
 CREATE POLICY ne_attendance_staff_write ON public.neuroeduca_attendance
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()));
 CREATE POLICY ne_attendance_student_justify ON public.neuroeduca_attendance
-    FOR UPDATE TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_current_role() IN ('aluno', 'encarregado_educacao') AND student_id = ANY(public.ne_current_student_ids()))
     WITH CHECK (public.ne_current_role() IN ('aluno', 'encarregado_educacao') AND student_id = ANY(public.ne_current_student_ids()));
 
 CREATE POLICY ne_invoices_select ON public.neuroeduca_invoices
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
-        OR (
-            public.ne_current_role() IN ('admin_institucional', 'director_geral', 'secretario_geral', 'funcionario_financeiro')
-            AND institution_id = public.ne_current_institution_id()
-        )
+        OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
         OR (
             public.ne_current_role() IN ('aluno', 'encarregado_educacao')
             AND student_id = ANY(public.ne_current_student_ids())
         )
     );
 CREATE POLICY ne_invoices_write ON public.neuroeduca_invoices
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (
@@ -1059,20 +1389,17 @@ CREATE POLICY ne_invoices_write ON public.neuroeduca_invoices
     );
 
 CREATE POLICY ne_fin_notif_select ON public.neuroeduca_financial_notifications
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
-        OR (
-            public.ne_current_role() IN ('admin_institucional', 'director_geral', 'secretario_geral', 'funcionario_financeiro')
-            AND institution_id = public.ne_current_institution_id()
-        )
+        OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
         OR (
             public.ne_current_role() IN ('aluno', 'encarregado_educacao')
             AND student_id = ANY(public.ne_current_student_ids())
         )
     );
 CREATE POLICY ne_fin_notif_write ON public.neuroeduca_financial_notifications
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (
@@ -1087,16 +1414,20 @@ CREATE POLICY ne_fin_notif_write ON public.neuroeduca_financial_notifications
             AND institution_id = public.ne_current_institution_id()
         )
     );
+CREATE POLICY ne_fin_notif_student_read ON public.neuroeduca_financial_notifications
+    FOR UPDATE TO anon, authenticated
+    USING (public.ne_current_role() IN ('aluno', 'encarregado_educacao') AND student_id = ANY(public.ne_current_student_ids()))
+    WITH CHECK (public.ne_current_role() IN ('aluno', 'encarregado_educacao') AND student_id = ANY(public.ne_current_student_ids()));
 
 CREATE POLICY ne_archive_select ON public.neuroeduca_digital_archive
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
         OR (public.ne_current_role() IN ('aluno', 'encarregado_educacao') AND student_id = ANY(public.ne_current_student_ids()))
     );
 CREATE POLICY ne_archive_insert ON public.neuroeduca_digital_archive
-    FOR INSERT TO authenticated
+    FOR INSERT TO anon, authenticated
     WITH CHECK (
         public.ne_is_super_admin()
         OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
@@ -1107,11 +1438,11 @@ CREATE POLICY ne_archive_insert ON public.neuroeduca_digital_archive
         )
     );
 CREATE POLICY ne_archive_update ON public.neuroeduca_digital_archive
-    FOR UPDATE TO authenticated
+    FOR UPDATE TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id()));
 CREATE POLICY ne_archive_delete ON public.neuroeduca_digital_archive
-    FOR DELETE TO authenticated
+    FOR DELETE TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
@@ -1119,27 +1450,30 @@ CREATE POLICY ne_archive_delete ON public.neuroeduca_digital_archive
     );
 
 CREATE POLICY ne_announcements_select ON public.neuroeduca_announcements
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
-        public.ne_is_super_admin()
-        OR institution_id IS NULL
-        OR institution_id = public.ne_current_institution_id()
-        OR public.ne_current_role() = 'director_municipal'
+        public.ne_current_role() IS NOT NULL
+        AND (
+            public.ne_is_super_admin()
+            OR institution_id IS NULL
+            OR institution_id = public.ne_current_institution_id()
+            OR public.ne_current_role() = 'director_municipal'
+        )
     );
 CREATE POLICY ne_announcements_write ON public.neuroeduca_announcements
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()))
     WITH CHECK (public.ne_is_super_admin() OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id()));
 
 CREATE POLICY ne_accounts_select ON public.neuroeduca_accounts
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
-        OR auth_user_id = auth.uid()
+        OR id = public.ne_current_account_id()
         OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
     );
 CREATE POLICY ne_accounts_insert ON public.neuroeduca_accounts
-    FOR INSERT TO authenticated
+    FOR INSERT TO anon, authenticated
     WITH CHECK (
         public.ne_is_super_admin()
         OR (
@@ -1149,7 +1483,7 @@ CREATE POLICY ne_accounts_insert ON public.neuroeduca_accounts
         )
     );
 CREATE POLICY ne_accounts_update ON public.neuroeduca_accounts
-    FOR UPDATE TO authenticated
+    FOR UPDATE TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (
@@ -1167,26 +1501,26 @@ CREATE POLICY ne_accounts_update ON public.neuroeduca_accounts
         )
     );
 CREATE POLICY ne_accounts_delete ON public.neuroeduca_accounts
-    FOR DELETE TO authenticated
+    FOR DELETE TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (
             public.ne_is_school_admin()
             AND institution_id = public.ne_current_institution_id()
             AND role NOT IN ('super_admin', 'director_municipal')
-            AND auth_user_id IS DISTINCT FROM auth.uid()
+            AND id IS DISTINCT FROM public.ne_current_account_id()
         )
     );
 
 CREATE POLICY ne_school_users_select ON public.neuroeduca_school_users
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
-        OR auth_user_id = auth.uid()
+        OR account_id = public.ne_current_account_id()
         OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
     );
 CREATE POLICY ne_school_users_write ON public.neuroeduca_school_users
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (
@@ -1205,31 +1539,59 @@ CREATE POLICY ne_school_users_write ON public.neuroeduca_school_users
     );
 
 CREATE POLICY ne_plans_select ON public.neuroeduca_subscription_plans
-    FOR SELECT TO authenticated USING (true);
+    FOR SELECT TO anon, authenticated USING (public.ne_current_role() IS NOT NULL);
 CREATE POLICY ne_plans_write ON public.neuroeduca_subscription_plans
-    FOR ALL TO authenticated
+    FOR ALL TO anon, authenticated
     USING (public.ne_is_super_admin())
     WITH CHECK (public.ne_is_super_admin());
 
 CREATE POLICY ne_audit_select ON public.neuroeduca_audit_logs
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         public.ne_is_super_admin()
         OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
     );
 CREATE POLICY ne_audit_insert ON public.neuroeduca_audit_logs
-    FOR INSERT TO authenticated
+    FOR INSERT TO anon, authenticated
     WITH CHECK (
         public.ne_is_super_admin()
-        OR institution_id = public.ne_current_institution_id()
+        OR (
+            public.ne_current_role() IS NOT NULL
+            AND (institution_id = public.ne_current_institution_id() OR institution_id IS NULL)
+        )
     );
 CREATE POLICY ne_audit_admin_manage ON public.neuroeduca_audit_logs
-    FOR DELETE TO authenticated
+    FOR DELETE TO anon, authenticated
     USING (public.ne_is_super_admin());
+
+CREATE POLICY ne_psy_protocols_select ON public.neuroeduca_psychopedagogical_protocols
+    FOR SELECT TO anon, authenticated
+    USING (public.ne_current_role() IS NOT NULL);
+CREATE POLICY ne_psy_protocols_write ON public.neuroeduca_psychopedagogical_protocols
+    FOR ALL TO anon, authenticated
+    USING (public.ne_is_super_admin())
+    WITH CHECK (public.ne_is_super_admin());
+
+CREATE POLICY ne_psy_cases_select ON public.neuroeduca_psychopedagogical_cases
+    FOR SELECT TO anon, authenticated
+    USING (
+        public.ne_is_super_admin()
+        OR (public.ne_is_school_staff() AND institution_id = public.ne_current_institution_id())
+    );
+CREATE POLICY ne_psy_cases_write ON public.neuroeduca_psychopedagogical_cases
+    FOR ALL TO anon, authenticated
+    USING (
+        public.ne_is_super_admin()
+        OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
+    )
+    WITH CHECK (
+        public.ne_is_super_admin()
+        OR (public.ne_is_school_admin() AND institution_id = public.ne_current_institution_id())
+    );
 
 -- =====================================================================
 -- SUPABASE STORAGE PRIVADO: BUCKET DE DOCUMENTOS PESSOAIS DOS ALUNOS
--- (Acesso autenticado via URLs assinadas; zero acesso público anónimo)
+-- (Acesso autenticado via URLs assinadas; zero acesso público não autenticado)
 -- =====================================================================
 
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -1247,7 +1609,7 @@ ON CONFLICT (id) DO UPDATE SET
 
 DROP POLICY IF EXISTS neuroeduca_student_docs_select ON storage.objects;
 CREATE POLICY neuroeduca_student_docs_select ON storage.objects
-    FOR SELECT TO authenticated
+    FOR SELECT TO anon, authenticated
     USING (
         bucket_id = 'neuroeduca-student-docs'
         AND (
@@ -1267,7 +1629,7 @@ CREATE POLICY neuroeduca_student_docs_select ON storage.objects
 
 DROP POLICY IF EXISTS neuroeduca_student_docs_insert ON storage.objects;
 CREATE POLICY neuroeduca_student_docs_insert ON storage.objects
-    FOR INSERT TO authenticated
+    FOR INSERT TO anon, authenticated
     WITH CHECK (
         bucket_id = 'neuroeduca-student-docs'
         AND (
@@ -1287,7 +1649,7 @@ CREATE POLICY neuroeduca_student_docs_insert ON storage.objects
 
 DROP POLICY IF EXISTS neuroeduca_student_docs_update ON storage.objects;
 CREATE POLICY neuroeduca_student_docs_update ON storage.objects
-    FOR UPDATE TO authenticated
+    FOR UPDATE TO anon, authenticated
     USING (
         bucket_id = 'neuroeduca-student-docs'
         AND (
@@ -1305,7 +1667,7 @@ CREATE POLICY neuroeduca_student_docs_update ON storage.objects
 
 DROP POLICY IF EXISTS neuroeduca_student_docs_delete ON storage.objects;
 CREATE POLICY neuroeduca_student_docs_delete ON storage.objects
-    FOR DELETE TO authenticated
+    FOR DELETE TO anon, authenticated
     USING (
         bucket_id = 'neuroeduca-student-docs'
         AND (

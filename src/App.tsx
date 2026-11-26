@@ -20,6 +20,7 @@ import { NavDeepLinkPayload } from './components/common/NavigationFilterDropdown
 import { InstitutionDashboard } from './components/Academic/InstitutionDashboard';
 import { CurriculumExplorer } from './components/Academic/CurriculumExplorer';
 import { ClassesManager } from './components/Academic/ClassesManager';
+import { ClassListsSheet } from './components/Academic/ClassListsSheet';
 import { SubjectsManager } from './components/Academic/SubjectsManager';
 import { StudentsManager } from './components/Academic/StudentsManager';
 import { TeachersManager } from './components/Academic/TeachersManager';
@@ -54,14 +55,27 @@ import {
   MunicipalDirectorDashboard,
   MunicipalSection
 } from './components/Municipal/MunicipalDirectorDashboard';
-import { storageService, StorageDataBundle } from './services/storageService';
+import {
+  createDemoSeedBundle,
+  createEmptyBundle,
+  deleteAccountInList,
+  StorageDataBundle,
+  updateAccountPasswordInList,
+  updateAccountStatusInList,
+  upsertAccountInList
+} from './services/storageService';
 import {
   clearSupabaseAuthSession,
   deleteStudentDocumentFromSupabaseStorage,
   fetchServerSupabaseStatus,
   getSupabaseConfig,
+  logoutFromSupabase,
+  markAnnouncementReadInSupabase,
   pullSupabaseDataToLocal,
-  scheduleAutoSupabasePush,
+  restoreSessionFromSupabase,
+  SupabaseMutationBatch,
+  syncChangesToSupabaseClient,
+  syncLocalDataToSupabase,
   uploadStudentDocumentToSupabaseStorage
 } from './lib/supabaseClient';
 import { resolveSubjectsForClass } from './utils/evaluationEngine';
@@ -105,94 +119,59 @@ import {
   PsychopedagogicalInstitutionConfig
 } from './types';
 
-function getInitialUser(): UserProfile | null {
-  if (typeof window === 'undefined') return null;
-  const saved = localStorage.getItem('neuroeduca_user');
-  if (saved) {
-    try {
-      return JSON.parse(saved);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function getDefaultTabForRole(role?: UserRole, hasInst?: boolean): string {
+function getDefaultTabForRole(role?: UserRole): string {
   if (role === 'super_admin') return 'super_institutions';
   if (role === 'director_municipal') return 'municipal_dashboard';
   if (role === 'aluno' || role === 'encarregado_educacao') return 'student_portal';
   if (role === 'professor' || role === 'director_turma') return 'classes';
   if (role === 'funcionario_financeiro') return 'financial';
-  if (hasInst === false) return 'super_institutions';
   return 'dashboard';
 }
 
 export default function App() {
-  // Inicialização e carregamento do Armazenamento Local (LocalStorage)
-  const [initialData] = useState(() => storageService.initializeStorage());
-  const [restoredUser] = useState<UserProfile | null>(() => getInitialUser());
+  const [initialData] = useState<StorageDataBundle>(() => createEmptyBundle());
 
   const [institutions, setInstitutions] = useState<Institution[]>(initialData.institutions);
-  const [currentInstitution, setCurrentInstitution] = useState<Institution | null>(() => {
-    if (
-      restoredUser?.role === 'super_admin' ||
-      restoredUser?.role === 'director_municipal'
-    ) {
-      return null;
-    }
-    if (restoredUser?.institutionId) {
-      return (
-        initialData.institutions.find((i) => i.id === restoredUser.institutionId) ||
-        initialData.institutions[0] ||
-        null
-      );
-    }
-    return initialData.institutions[0] || null;
-  });
+  const [currentInstitution, setCurrentInstitution] = useState<Institution | null>(null);
 
-  // Estado de Autenticação (Login e Cadastro)
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(restoredUser);
+  // Estado de Autenticação (Sessão validada no Supabase via cookie HttpOnly)
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState<boolean>(true);
+  const [isLoadingCloudData, setIsLoadingCloudData] = useState<boolean>(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  const [activeRole, setActiveRole] = useState<UserRole>(
-    restoredUser?.role || 'director_geral'
-  );
+  const [activeRole, setActiveRole] = useState<UserRole>('director_geral');
   const [academicYear] = useState('2026/2027');
 
-  const [classes, setClasses] = useState<ClassRoom[]>(initialData.classes);
-  const [subjects, setSubjects] = useState<SchoolSubject[]>(initialData.subjects || []);
-  const [students, setStudents] = useState<Student[]>(initialData.students);
-  const [teachers, setTeachers] = useState<Teacher[]>(initialData.teachers);
-  const [grades, setGrades] = useState<GradeRecord[]>(initialData.grades);
-  const [invoices, setInvoices] = useState<Invoice[]>(initialData.invoices);
-  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(initialData.auditLogs);
-  const [schoolUsers, setSchoolUsers] = useState<SchoolUser[]>(initialData.schoolUsers);
-  const [accounts, setAccounts] = useState<StoredCredential[]>(initialData.accounts);
+  const [classes, setClasses] = useState<ClassRoom[]>(initialData.classes ?? []);
+  const [subjects, setSubjects] = useState<SchoolSubject[]>(initialData.subjects ?? []);
+  const [students, setStudents] = useState<Student[]>(initialData.students ?? []);
+  const [teachers, setTeachers] = useState<Teacher[]>(initialData.teachers ?? []);
+  const [grades, setGrades] = useState<GradeRecord[]>(initialData.grades ?? []);
+  const [invoices, setInvoices] = useState<Invoice[]>(initialData.invoices ?? []);
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(initialData.auditLogs ?? []);
+  const [schoolUsers, setSchoolUsers] = useState<SchoolUser[]>(initialData.schoolUsers ?? []);
+  const [accounts, setAccounts] = useState<StoredCredential[]>(initialData.accounts ?? []);
   const [digitalArchive, setDigitalArchive] = useState<DigitalArchiveDocument[]>(
-    initialData.digitalArchive || []
+    initialData.digitalArchive ?? []
   );
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>(
-    initialData.attendance || []
+    initialData.attendance ?? []
   );
   const [financialNotifications, setFinancialNotifications] = useState<FinancialNotification[]>(
-    initialData.financialNotifications || []
+    initialData.financialNotifications ?? []
   );
   const [announcements, setAnnouncements] = useState<Announcement[]>(
-    initialData.announcements || []
+    initialData.announcements ?? []
   );
   const [psychopedagogicalProtocols, setPsychopedagogicalProtocols] = useState<
     PsychopedagogicalProtocol[]
-  >(initialData.psychopedagogicalProtocols || []);
+  >(initialData.psychopedagogicalProtocols ?? []);
   const [psychopedagogicalCases, setPsychopedagogicalCases] = useState<
     PsychopedagogicalCase[]
-  >(initialData.psychopedagogicalCases || []);
+  >(initialData.psychopedagogicalCases ?? []);
 
-  const [currentTab, setCurrentTab] = useState<string>(() =>
-    getDefaultTabForRole(
-      restoredUser?.role,
-      restoredUser?.role !== 'super_admin' && restoredUser?.role !== 'director_municipal'
-    )
-  );
+  const [currentTab, setCurrentTab] = useState<string>(() => getDefaultTabForRole());
   const [currentEvalSubTab, setCurrentEvalSubTab] = useState<
     'mini_pauta' | 'pauta_geral' | 'boletim_aluno'
   >('mini_pauta');
@@ -207,7 +186,7 @@ export default function App() {
   const [openSubjectModalKey, setOpenSubjectModalKey] = useState<number | undefined>(undefined);
   const [openInvoiceModalKey, setOpenInvoiceModalKey] = useState<number | undefined>(undefined);
 
-  // Estado para Instalação de APK (PWA), Memória Localhost, Deep-Link e Notificações de Segurança
+  // Estado para Instalação de APK (PWA), Backup/Nuvem, Deep-Link e Notificações de Segurança
   const [isPWAInstallModalOpen, setIsPWAInstallModalOpen] = useState(false);
   const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
   const [accessDeniedNotice, setAccessDeniedNotice] = useState<string | null>(null);
@@ -388,6 +367,7 @@ export default function App() {
         'dashboard',
         'school_settings',
         'classes',
+        'class_lists',
         'subjects',
         'students',
         'attendance',
@@ -478,217 +458,220 @@ export default function App() {
   const [docStudentTarget, setDocStudentTarget] = useState<Student | undefined>(undefined);
   const [docTypeTarget, setDocTypeTarget] = useState<string | undefined>(undefined);
 
-  // Sincronização bidireccional inteligente com a memória Localhost (.neuroeduca_store.json) e Supabase
+  const buildCurrentBundle = (overrides?: Partial<StorageDataBundle>): StorageDataBundle => ({
+    institutions: overrides?.institutions ?? institutions,
+    classes: overrides?.classes ?? classes,
+    subjects: overrides?.subjects ?? subjects,
+    students: overrides?.students ?? students,
+    teachers: overrides?.teachers ?? teachers,
+    grades: overrides?.grades ?? grades,
+    invoices: overrides?.invoices ?? invoices,
+    auditLogs: overrides?.auditLogs ?? auditLogs,
+    schoolUsers: overrides?.schoolUsers ?? schoolUsers,
+    accounts: overrides?.accounts ?? accounts,
+    subscriptionPlans: overrides?.subscriptionPlans ?? INITIAL_SUBSCRIPTION_PLANS,
+    digitalArchive: overrides?.digitalArchive ?? digitalArchive,
+    attendance: overrides?.attendance ?? attendanceRecords,
+    financialNotifications: overrides?.financialNotifications ?? financialNotifications,
+    announcements: overrides?.announcements ?? announcements,
+    psychopedagogicalProtocols:
+      overrides?.psychopedagogicalProtocols ?? psychopedagogicalProtocols,
+    psychopedagogicalCases: overrides?.psychopedagogicalCases ?? psychopedagogicalCases,
+    updatedAt: new Date().toISOString()
+  });
+
+  const applyBundleToState = (
+    data: Partial<StorageDataBundle>,
+    options?: { role?: UserRole; preferredInstitutionId?: string }
+  ) => {
+    if (Array.isArray(data.institutions)) {
+      setInstitutions(data.institutions);
+      const targetRole = options?.role ?? currentUser?.role;
+      const targetInstId = options?.preferredInstitutionId ?? currentInstitution?.id ?? currentUser?.institutionId;
+      if (targetRole === 'super_admin' || targetRole === 'director_municipal') {
+        setCurrentInstitution(null);
+      } else if (data.institutions.length > 0) {
+        const resolved =
+          (targetInstId && data.institutions.find((i) => i.id === targetInstId)) ||
+          data.institutions[0];
+        if (resolved) setCurrentInstitution(resolved);
+      } else {
+        setCurrentInstitution(null);
+      }
+    }
+    if (Array.isArray(data.classes)) setClasses(data.classes);
+    if (Array.isArray(data.subjects)) setSubjects(data.subjects);
+    if (Array.isArray(data.students)) setStudents(data.students);
+    if (Array.isArray(data.teachers)) setTeachers(data.teachers);
+    if (Array.isArray(data.grades)) setGrades(data.grades);
+    if (Array.isArray(data.invoices)) setInvoices(data.invoices);
+    if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
+    if (Array.isArray(data.schoolUsers)) setSchoolUsers(data.schoolUsers);
+    if (Array.isArray(data.accounts)) setAccounts(data.accounts);
+    if (Array.isArray(data.digitalArchive)) setDigitalArchive(data.digitalArchive);
+    if (Array.isArray(data.attendance)) setAttendanceRecords(data.attendance);
+    if (Array.isArray(data.financialNotifications)) {
+      setFinancialNotifications(data.financialNotifications);
+    }
+    if (Array.isArray(data.announcements)) setAnnouncements(data.announcements);
+    if (Array.isArray(data.psychopedagogicalProtocols)) {
+      setPsychopedagogicalProtocols(data.psychopedagogicalProtocols);
+    }
+    if (Array.isArray(data.psychopedagogicalCases)) {
+      setPsychopedagogicalCases(data.psychopedagogicalCases);
+    }
+  };
+
+  const showSyncErrorNotice = (message: string) => {
+    setSyncNotice(message);
+    setTimeout(() => setSyncNotice(null), 6000);
+  };
+
+  const commitCloudChanges = async (batch: SupabaseMutationBatch): Promise<boolean> => {
+    try {
+      const res = await syncChangesToSupabaseClient(batch);
+      if (!res.success) {
+        showSyncErrorNotice(
+          res.errors?.[0] || 'Erro ao sincronizar alterações com o banco de dados Supabase.'
+        );
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      showSyncErrorNotice(
+        err?.message || 'Falha de ligação ao sincronizar alterações com o Supabase.'
+      );
+      return false;
+    }
+  };
+
+  // Restauração de sessão autenticada e dados directamente do Supabase ao carregar a página
   useEffect(() => {
     let cancelled = false;
 
-    const applyBundleToState = (data: Partial<StorageDataBundle>, sourceUpdatedAt?: string) => {
-      if (Array.isArray(data.institutions) && data.institutions.length > 0) {
-        setInstitutions(data.institutions);
+    const bootstrapSession = async () => {
+      try {
+        await fetchServerSupabaseStatus();
+        const sessionRes = await restoreSessionFromSupabase();
+        if (cancelled) return;
+
+        if (sessionRes.authenticated && sessionRes.account) {
+          const acc = sessionRes.account;
+          const role = acc.role as UserRole;
+          const restoredUser: UserProfile = {
+            id: `u-${acc.email}`,
+            fullName: acc.fullName,
+            email: acc.email,
+            phone: '+244 900 000 000',
+            role,
+            institutionId: acc.institutionId,
+            municipality: acc.municipality,
+            province: acc.province
+          };
+
+          setCurrentUser(restoredUser);
+          setActiveRole(role);
+          setCurrentTab(getDefaultTabForRole(role));
+
+          const pullRes = await pullSupabaseDataToLocal();
+          if (cancelled) return;
+
+          if (pullRes.bundle) {
+            applyBundleToState(pullRes.bundle, {
+              role,
+              preferredInstitutionId: acc.institutionId
+            });
+          } else if (!pullRes.success && pullRes.errors?.length) {
+            showSyncErrorNotice(pullRes.errors[0]);
+          }
+        }
+      } catch (err) {
+        console.log('Restauração de sessão Supabase:', err);
+      } finally {
+        if (!cancelled) {
+          setIsRestoringSession(false);
+        }
       }
-      if (Array.isArray(data.classes)) setClasses(data.classes);
-      if (Array.isArray(data.subjects)) setSubjects(data.subjects);
-      if (Array.isArray(data.students)) setStudents(data.students);
-      if (Array.isArray(data.teachers)) setTeachers(data.teachers);
-      if (Array.isArray(data.grades)) setGrades(data.grades);
-      if (Array.isArray(data.invoices)) setInvoices(data.invoices);
-      if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
-      if (Array.isArray(data.schoolUsers)) setSchoolUsers(data.schoolUsers);
-      if (Array.isArray(data.accounts)) setAccounts(data.accounts);
-      if (Array.isArray(data.digitalArchive)) setDigitalArchive(data.digitalArchive);
-      if (Array.isArray(data.attendance)) setAttendanceRecords(data.attendance);
-      if (Array.isArray(data.financialNotifications)) {
-        setFinancialNotifications(data.financialNotifications);
-      }
-      if (Array.isArray(data.announcements)) {
-        setAnnouncements(data.announcements);
-      }
-      if (Array.isArray(data.psychopedagogicalProtocols)) {
-        setPsychopedagogicalProtocols(data.psychopedagogicalProtocols);
-      }
-      if (Array.isArray(data.psychopedagogicalCases)) {
-        setPsychopedagogicalCases(data.psychopedagogicalCases);
-      }
-      storageService.saveAll(data, { preserveUpdatedAt: sourceUpdatedAt || data.updatedAt });
     };
 
-    const initialLocalTimestamp = storageService.getLastUpdatedTimestamp();
-    const EPOCH_SEED_THRESHOLD = Date.parse('1970-01-02T00:00:00.000Z');
-    const isFreshBrowserSeed = initialLocalTimestamp <= EPOCH_SEED_THRESHOLD;
-
-    fetch('/api/sync')
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const serverTimestamp = data?.updatedAt ? Date.parse(data.updatedAt) || 0 : 0;
-
-        if (data && Array.isArray(data.institutions) && data.institutions.length > 0) {
-          if (isFreshBrowserSeed || !initialLocalTimestamp || serverTimestamp > initialLocalTimestamp) {
-            applyBundleToState(data, data.updatedAt);
-          }
-        } else if (!isFreshBrowserSeed) {
-          fetch('/api/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(initialData)
-          }).catch(() => {});
-        }
-      })
-      .catch((err) => console.log('Sincronização inicial:', err));
-
-    // Verificar se o Supabase está configurado (Variáveis/Servidor ou navegador) e puxar actualizações mais recentes
-    fetchServerSupabaseStatus()
-      .then(async (status) => {
-        if (cancelled) return;
-        const cfg = getSupabaseConfig();
-        const shouldPullFromCloud =
-          status.serverConfigured || Boolean(cfg.url && cfg.anonKey);
-        if (!shouldPullFromCloud) return;
-
-        const pullRes = await pullSupabaseDataToLocal();
-        if (cancelled || !pullRes.success || !pullRes.bundle) return;
-
-        const localTs = storageService.getLastUpdatedTimestamp();
-        const cloudTs = pullRes.cloudUpdatedAt ? Date.parse(pullRes.cloudUpdatedAt) || 0 : 0;
-        if (cloudTs > localTs || localTs <= EPOCH_SEED_THRESHOLD) {
-          applyBundleToState(pullRes.bundle, pullRes.cloudUpdatedAt || new Date().toISOString());
-        } else if (Array.isArray(pullRes.bundle.accounts) && pullRes.bundle.accounts.length > 0) {
-          // Garantir que novas contas criadas directamente no Supabase (ex: Super Admin SQL) ficam disponíveis no login
-          const existingEmails = new Set(
-            storageService.getAccounts().map((a) => a.email.toLowerCase())
-          );
-          let added = false;
-          pullRes.bundle.accounts.forEach((acc) => {
-            if (acc?.email && !existingEmails.has(acc.email.toLowerCase())) {
-              storageService.upsertAccount(acc);
-              added = true;
-            }
-          });
-          if (added) {
-            setAccounts(storageService.getAccounts());
-          }
-        }
-      })
-      .catch(() => {});
+    bootstrapSession();
 
     return () => {
       cancelled = true;
     };
-  }, [initialData]);
+  }, []);
 
-  // Função central para guardar estado no LocalStorage, servidor Localhost e Supabase (quando activo)
-  const persistState = (newData: Partial<StorageDataBundle>) => {
-    storageService.saveAll(newData);
+  // Sincronização imediata quando o cabeçalho oficial de uma escola é editado inline
+  useEffect(() => {
+    const handleHeaderUpdated = (event: Event) => {
+      const detail = (event as CustomEvent)?.detail;
+      if (!detail?.institutionId || detail.institutionId === 'default' || !detail.config) return;
+      const target = institutions.find((i) => i.id === detail.institutionId);
+      if (!target) return;
 
-    const payload: StorageDataBundle = {
-      institutions: newData.institutions || institutions,
-      classes: newData.classes || classes,
-      subjects: newData.subjects || subjects,
-      students: newData.students || students,
-      teachers: newData.teachers || teachers,
-      grades: newData.grades || grades,
-      invoices: newData.invoices || invoices,
-      auditLogs: newData.auditLogs || auditLogs,
-      schoolUsers: newData.schoolUsers || schoolUsers,
-      accounts: newData.accounts || accounts,
-      digitalArchive: newData.digitalArchive || digitalArchive,
-      attendance: newData.attendance || attendanceRecords,
-      financialNotifications: newData.financialNotifications || financialNotifications,
-      announcements: newData.announcements || announcements,
-      psychopedagogicalProtocols:
-        newData.psychopedagogicalProtocols || psychopedagogicalProtocols,
-      psychopedagogicalCases: newData.psychopedagogicalCases || psychopedagogicalCases
+      const updatedInst: Institution = {
+        ...target,
+        documentHeader: detail.config
+      };
+      setInstitutions((prev) =>
+        prev.map((inst) => (inst.id === updatedInst.id ? updatedInst : inst))
+      );
+      if (currentInstitution?.id === updatedInst.id) {
+        setCurrentInstitution(updatedInst);
+      }
+      commitCloudChanges({
+        upserts: { institutions: [updatedInst] }
+      });
     };
 
-    fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).catch((err) => console.log('Sincronização servidor:', err));
+    window.addEventListener('neuroeduca-document-header-updated', handleHeaderUpdated);
+    return () => {
+      window.removeEventListener('neuroeduca-document-header-updated', handleHeaderUpdated);
+    };
+  }, [institutions, currentInstitution?.id]);
 
-    scheduleAutoSupabasePush(payload);
-  };
-
-  const handleForceSaveAll = () => {
-    persistState({
-      institutions,
-      classes,
-      subjects,
-      students,
-      teachers,
-      grades,
-      invoices,
-      auditLogs,
-      schoolUsers,
-      accounts,
-      digitalArchive,
-      attendance: attendanceRecords,
-      financialNotifications,
-      announcements,
-      psychopedagogicalProtocols,
-      psychopedagogicalCases
-    });
-  };
-
-  const handleDataReset = () => {
-    const bundle = storageService.resetToDefaults();
-    setInstitutions(bundle.institutions);
-    setClasses(bundle.classes);
-    setSubjects(bundle.subjects || []);
-    setStudents(bundle.students);
-    setTeachers(bundle.teachers);
-    setGrades(bundle.grades);
-    setInvoices(bundle.invoices);
-    setAuditLogs(bundle.auditLogs);
-    setSchoolUsers(bundle.schoolUsers);
-    setAccounts(bundle.accounts);
-    setDigitalArchive(bundle.digitalArchive || []);
-    setAttendanceRecords(bundle.attendance || []);
-    setFinancialNotifications(bundle.financialNotifications || []);
-    setAnnouncements(bundle.announcements || []);
-    setPsychopedagogicalProtocols(bundle.psychopedagogicalProtocols || []);
-    setPsychopedagogicalCases(bundle.psychopedagogicalCases || []);
-    if (
-      bundle.institutions.length > 0 &&
-      currentUser?.role !== 'super_admin' &&
-      currentUser?.role !== 'director_municipal'
-    ) {
-      setCurrentInstitution(bundle.institutions[0]);
+  const handlePullFromCloud = async () => {
+    setIsLoadingCloudData(true);
+    try {
+      const pullRes = await pullSupabaseDataToLocal();
+      if (!pullRes.bundle) {
+        throw new Error(pullRes.errors?.[0] || 'Não foi possível carregar dados do Supabase.');
+      }
+      applyBundleToState(pullRes.bundle, {
+        role: currentUser?.role,
+        preferredInstitutionId: currentUser?.institutionId || currentInstitution?.id
+      });
+    } finally {
+      setIsLoadingCloudData(false);
     }
-    persistState(bundle);
   };
 
-  const handleDataRestored = (bundle: StorageDataBundle) => {
-    setInstitutions(bundle.institutions);
-    setClasses(bundle.classes);
-    setSubjects(bundle.subjects || []);
-    setStudents(bundle.students);
-    setTeachers(bundle.teachers);
-    setGrades(bundle.grades);
-    setInvoices(bundle.invoices);
-    setAuditLogs(bundle.auditLogs);
-    setSchoolUsers(bundle.schoolUsers || initialData.schoolUsers);
-    setAccounts(bundle.accounts || storageService.getAccounts());
-    setDigitalArchive(bundle.digitalArchive || []);
-    setAttendanceRecords(bundle.attendance || initialData.attendance || []);
-    setFinancialNotifications(
-      bundle.financialNotifications || initialData.financialNotifications || []
-    );
-    setAnnouncements(bundle.announcements || initialData.announcements || []);
-    setPsychopedagogicalProtocols(
-      bundle.psychopedagogicalProtocols || initialData.psychopedagogicalProtocols || []
-    );
-    setPsychopedagogicalCases(
-      bundle.psychopedagogicalCases || initialData.psychopedagogicalCases || []
-    );
-    if (
-      bundle.institutions.length > 0 &&
-      currentUser?.role !== 'super_admin' &&
-      currentUser?.role !== 'director_municipal'
-    ) {
-      setCurrentInstitution(bundle.institutions[0]);
+  const handleForceSyncCloud = async () => {
+    const res = await syncLocalDataToSupabase(buildCurrentBundle(), { pruneMissing: true });
+    if (!res.success) {
+      throw new Error(res.errors?.[0] || 'Erro ao sincronizar dados com o Supabase.');
     }
-    persistState(bundle);
+  };
+
+  const handleSeedDemoData = async () => {
+    const bundle = createDemoSeedBundle();
+    applyBundleToState(bundle);
+    const res = await syncLocalDataToSupabase(bundle, { pruneMissing: true });
+    if (!res.success) {
+      showSyncErrorNotice(
+        res.errors?.[0] || 'Erro ao enviar dados de demonstração para o Supabase.'
+      );
+    }
+  };
+
+  const handleDataRestored = async (bundle: StorageDataBundle) => {
+    applyBundleToState(bundle);
+    const res = await syncLocalDataToSupabase(bundle, { pruneMissing: true });
+    if (!res.success) {
+      showSyncErrorNotice(
+        res.errors?.[0] || 'Erro ao sincronizar cópia restaurada com o Supabase.'
+      );
+    }
   };
 
   // Handlers para Alunos
@@ -713,10 +696,25 @@ export default function App() {
     const updatedCurrInst = updatedInstitutions.find((i) => i.id === currentInstitution?.id);
     if (updatedCurrInst) setCurrentInstitution(updatedCurrInst);
 
-    const latestAccounts = storageService.getAccounts();
-    setAccounts(latestAccounts);
+    let updatedAccounts = accounts;
+    const upsertedAccounts: StoredCredential[] = [];
+    if (newStudent.email) {
+      updatedAccounts = upsertAccountInList(accounts, {
+        email: newStudent.email,
+        password: newStudent.portalPassword || '123',
+        fullName: `${newStudent.fullName} (Estudante)`,
+        role: 'aluno',
+        institutionId: newStudent.institutionId,
+        institutionName: currentInstitution?.name,
+        status: 'activo'
+      });
+      setAccounts(updatedAccounts);
+      const createdAcc = updatedAccounts.find(
+        (a) => a.email.toLowerCase() === newStudent.email!.trim().toLowerCase()
+      );
+      if (createdAcc) upsertedAccounts.push(createdAcc);
+    }
 
-    // Registar auditoria (a facturação de propina e taxa de matrícula é responsabilidade exclusiva do Tesoureiro)
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
       institutionId: newStudent.institutionId,
@@ -730,16 +728,28 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      students: updatedStudents,
-      classes: updatedClasses,
-      institutions: updatedInstitutions,
-      accounts: latestAccounts,
-      auditLogs: updatedLogs,
+    const changedClass = updatedClasses.find((c) => c.id === newStudent.classId);
+    const changedInst = updatedInstitutions.find((i) => i.id === newStudent.institutionId);
+
+    commitCloudChanges({
+      upserts: {
+        students: [newStudent],
+        ...(changedClass ? { classes: [changedClass] } : {}),
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        ...(upsertedAccounts.length > 0 ? { accounts: upsertedAccounts } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers
+      }
     });
   };
 
   const handleUpdateStudent = (updatedStudent: Student) => {
+    const prevStudent = students.find((s) => s.id === updatedStudent.id);
     const updatedStudents = students.map((s) =>
       s.id === updatedStudent.id ? updatedStudent : s
     );
@@ -754,32 +764,49 @@ export default function App() {
     });
     setClasses(updatedClasses);
 
-    const updatedGrades = grades.map((g) =>
-      g.studentId === updatedStudent.id
-        ? {
-            ...g,
-            studentName: updatedStudent.fullName,
-            studentProcessNumber: updatedStudent.processNumber,
-            classId: updatedStudent.classId
-          }
-        : g
-    );
+    const changedGrades: GradeRecord[] = [];
+    const updatedGrades = grades.map((g) => {
+      if (g.studentId === updatedStudent.id) {
+        const nextGrade = {
+          ...g,
+          studentName: updatedStudent.fullName,
+          studentProcessNumber: updatedStudent.processNumber,
+          classId: updatedStudent.classId
+        };
+        changedGrades.push(nextGrade);
+        return nextGrade;
+      }
+      return g;
+    });
     setGrades(updatedGrades);
 
-    const updatedInvoices = invoices.map((inv) =>
-      inv.studentId === updatedStudent.id
-        ? {
-            ...inv,
-            studentName: updatedStudent.fullName,
-            studentProcessNumber: updatedStudent.processNumber
-          }
-        : inv
-    );
+    const changedInvoices: Invoice[] = [];
+    const updatedInvoices = invoices.map((inv) => {
+      if (inv.studentId === updatedStudent.id) {
+        const nextInv = {
+          ...inv,
+          studentName: updatedStudent.fullName,
+          studentProcessNumber: updatedStudent.processNumber
+        };
+        changedInvoices.push(nextInv);
+        return nextInv;
+      }
+      return inv;
+    });
     setInvoices(updatedInvoices);
 
-    if (updatedStudent.email) {
-      storageService.upsertAccount({
-        email: updatedStudent.email,
+    let updatedAccounts = accounts;
+    const upsertedAccounts: StoredCredential[] = [];
+    const deletedAccountEmails: string[] = [];
+    const prevEmail = prevStudent?.email?.trim().toLowerCase();
+    const nextEmail = updatedStudent.email?.trim().toLowerCase();
+    if (prevEmail && prevEmail !== nextEmail) {
+      updatedAccounts = deleteAccountInList(updatedAccounts, prevEmail);
+      deletedAccountEmails.push(prevEmail);
+    }
+    if (nextEmail) {
+      updatedAccounts = upsertAccountInList(updatedAccounts, {
+        email: nextEmail,
         password: updatedStudent.portalPassword || '123',
         fullName: `${updatedStudent.fullName} (Estudante)`,
         role: 'aluno',
@@ -787,9 +814,10 @@ export default function App() {
         institutionName: currentInstitution?.name,
         status: 'activo'
       });
+      const accObj = updatedAccounts.find((a) => a.email.toLowerCase() === nextEmail);
+      if (accObj) upsertedAccounts.push(accObj);
     }
-    const latestAccounts = storageService.getAccounts();
-    setAccounts(latestAccounts);
+    setAccounts(updatedAccounts);
 
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
@@ -804,13 +832,26 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      students: updatedStudents,
-      classes: updatedClasses,
-      grades: updatedGrades,
-      invoices: updatedInvoices,
-      accounts: latestAccounts,
-      auditLogs: updatedLogs
+    const affectedClasses = updatedClasses.filter(
+      (c) => c.id === updatedStudent.classId || (prevStudent && c.id === prevStudent.classId)
+    );
+
+    commitCloudChanges({
+      upserts: {
+        students: [updatedStudent],
+        ...(affectedClasses.length > 0 ? { classes: affectedClasses } : {}),
+        ...(changedGrades.length > 0 ? { grades: changedGrades } : {}),
+        ...(changedInvoices.length > 0 ? { invoices: changedInvoices } : {}),
+        ...(upsertedAccounts.length > 0 ? { accounts: upsertedAccounts } : {}),
+        auditLogs: [newLog]
+      },
+      ...(deletedAccountEmails.length > 0 ? { deletes: { accounts: deletedAccountEmails } } : {}),
+      fkContext: {
+        institutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers
+      }
     });
   };
 
@@ -820,6 +861,35 @@ export default function App() {
 
     const updatedStudents = students.filter((s) => s.id !== studentId);
     setStudents(updatedStudents);
+
+    const deletedGradeIds = grades.filter((g) => g.studentId === studentId).map((g) => g.id);
+    const deletedInvoiceIds = invoices.filter((i) => i.studentId === studentId).map((i) => i.id);
+    const deletedAttendanceIds = attendanceRecords
+      .filter((a) => a.studentId === studentId)
+      .map((a) => a.id);
+    const deletedArchiveIds = digitalArchive
+      .filter((d) => d.studentId === studentId)
+      .map((d) => d.id);
+    const deletedFinNotifIds = financialNotifications
+      .filter((n) => n.studentId === studentId)
+      .map((n) => n.id);
+    const deletedCaseIds = psychopedagogicalCases
+      .filter((c) => c.studentId === studentId)
+      .map((c) => c.id);
+
+    setGrades((prev) => prev.filter((g) => g.studentId !== studentId));
+    setInvoices((prev) => prev.filter((i) => i.studentId !== studentId));
+    setAttendanceRecords((prev) => prev.filter((a) => a.studentId !== studentId));
+    setDigitalArchive((prev) => prev.filter((d) => d.studentId !== studentId));
+    setFinancialNotifications((prev) => prev.filter((n) => n.studentId !== studentId));
+    setPsychopedagogicalCases((prev) => prev.filter((c) => c.studentId !== studentId));
+
+    const deletedAccountEmails: string[] = [];
+    if (targetStudent.email) {
+      const emailLower = targetStudent.email.trim().toLowerCase();
+      setAccounts((prev) => deleteAccountInList(prev, emailLower));
+      deletedAccountEmails.push(emailLower);
+    }
 
     const updatedClasses = classes.map((c) => {
       if (c.institutionId !== targetStudent.institutionId) return c;
@@ -853,11 +923,31 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      students: updatedStudents,
-      classes: updatedClasses,
-      institutions: updatedInstitutions,
-      auditLogs: updatedLogs
+    const changedClass = updatedClasses.find((c) => c.id === targetStudent.classId);
+    const changedInst = updatedInstitutions.find((i) => i.id === targetStudent.institutionId);
+
+    commitCloudChanges({
+      deletes: {
+        students: [studentId],
+        ...(deletedGradeIds.length > 0 ? { grades: deletedGradeIds } : {}),
+        ...(deletedInvoiceIds.length > 0 ? { invoices: deletedInvoiceIds } : {}),
+        ...(deletedAttendanceIds.length > 0 ? { attendance: deletedAttendanceIds } : {}),
+        ...(deletedArchiveIds.length > 0 ? { digitalArchive: deletedArchiveIds } : {}),
+        ...(deletedFinNotifIds.length > 0 ? { financialNotifications: deletedFinNotifIds } : {}),
+        ...(deletedCaseIds.length > 0 ? { psychopedagogicalCases: deletedCaseIds } : {}),
+        ...(deletedAccountEmails.length > 0 ? { accounts: deletedAccountEmails } : {})
+      },
+      upserts: {
+        ...(changedClass ? { classes: [changedClass] } : {}),
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers
+      }
     });
   };
 
@@ -896,10 +986,19 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      classes: updatedClasses,
-      institutions: updatedInstitutions,
-      auditLogs: updatedLogs
+    const changedInst = updatedInstitutions.find((i) => i.id === newClass.institutionId);
+    commitCloudChanges({
+      upserts: {
+        classes: [newClass],
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes: updatedClasses,
+        students,
+        teachers
+      }
     });
   };
 
@@ -914,18 +1013,22 @@ export default function App() {
     const updatedClasses = classes.map((c) => (c.id === updatedClass.id ? updatedClass : c));
     setClasses(updatedClasses);
 
-    const updatedStudents = students.map((s) =>
-      s.classId === updatedClass.id
-        ? {
-            ...s,
-            className: updatedClass.name,
-            gradeLevel: updatedClass.gradeLevel,
-            subsystemCode: updatedClass.subsystemCode,
-            courseName: updatedClass.courseName,
-            shift: updatedClass.shift
-          }
-        : s
-    );
+    const changedStudents: Student[] = [];
+    const updatedStudents = students.map((s) => {
+      if (s.classId === updatedClass.id) {
+        const nextStudent = {
+          ...s,
+          className: updatedClass.name,
+          gradeLevel: updatedClass.gradeLevel,
+          subsystemCode: updatedClass.subsystemCode,
+          courseName: updatedClass.courseName,
+          shift: updatedClass.shift
+        };
+        changedStudents.push(nextStudent);
+        return nextStudent;
+      }
+      return s;
+    });
     setStudents(updatedStudents);
 
     const newLog: AuditLogItem = {
@@ -941,7 +1044,19 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ classes: updatedClasses, students: updatedStudents, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: {
+        classes: [updatedClass],
+        ...(changedStudents.length > 0 ? { students: changedStudents } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers
+      }
+    });
   };
 
   const handleDeleteClass = (classId: string) => {
@@ -958,17 +1073,28 @@ export default function App() {
     const updatedClasses = classes.filter((c) => c.id !== classId);
     setClasses(updatedClasses);
 
-    const updatedStudents = students.map((s) =>
-      s.classId === classId
-        ? { ...s, classId: '', className: 'Sem Turma Atribuída' }
-        : s
-    );
+    const changedStudents: Student[] = [];
+    const updatedStudents = students.map((s) => {
+      if (s.classId === classId) {
+        const nextStudent = { ...s, classId: '', className: 'Sem Turma Atribuída' };
+        changedStudents.push(nextStudent);
+        return nextStudent;
+      }
+      return s;
+    });
     setStudents(updatedStudents);
 
-    const updatedTeachers = teachers.map((t) => ({
-      ...t,
-      assignedClasses: (t.assignedClasses || []).filter((a) => a.classId !== classId)
-    }));
+    const changedTeachers: Teacher[] = [];
+    const updatedTeachers = teachers.map((t) => {
+      const hadClass = (t.assignedClasses || []).some((a) => a.classId === classId);
+      if (!hadClass) return t;
+      const nextTeacher = {
+        ...t,
+        assignedClasses: (t.assignedClasses || []).filter((a) => a.classId !== classId)
+      };
+      changedTeachers.push(nextTeacher);
+      return nextTeacher;
+    });
     setTeachers(updatedTeachers);
 
     const updatedInstitutions = institutions.map((inst) => {
@@ -994,12 +1120,24 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      classes: updatedClasses,
-      students: updatedStudents,
-      teachers: updatedTeachers,
-      institutions: updatedInstitutions,
-      auditLogs: updatedLogs
+    const changedInst = updatedInstitutions.find((i) => i.id === targetClass.institutionId);
+
+    commitCloudChanges({
+      deletes: {
+        classes: [classId]
+      },
+      upserts: {
+        ...(changedStudents.length > 0 ? { students: changedStudents } : {}),
+        ...(changedTeachers.length > 0 ? { teachers: changedTeachers } : {}),
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers: updatedTeachers
+      }
     });
   };
 
@@ -1022,7 +1160,10 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ subjects: updatedSubjects, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: { subjects: [newSubject], auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleUpdateSubject = (updatedSubject: SchoolSubject) => {
@@ -1031,14 +1172,19 @@ export default function App() {
       s.id === updatedSubject.id ? updatedSubject : s
     );
     setSubjects(updatedSubjects);
-    persistState({ subjects: updatedSubjects });
+    commitCloudChanges({
+      upserts: { subjects: [updatedSubject] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleDeleteSubject = (subjectId: string) => {
     if (!isSchoolAdminRole) return;
     const updatedSubjects = subjects.filter((s) => s.id !== subjectId);
     setSubjects(updatedSubjects);
-    persistState({ subjects: updatedSubjects });
+    commitCloudChanges({
+      deletes: { subjects: [subjectId] }
+    });
   };
 
   // Handlers para Professores
@@ -1069,10 +1215,19 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      teachers: updatedTeachers,
-      institutions: updatedInstitutions,
-      auditLogs: updatedLogs
+    const changedInst = updatedInstitutions.find((i) => i.id === newTeacher.institutionId);
+    commitCloudChanges({
+      upserts: {
+        teachers: [newTeacher],
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes,
+        students,
+        teachers: updatedTeachers
+      }
     });
   };
 
@@ -1103,9 +1258,9 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      teachers: updatedTeachers,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: { teachers: [updatedTeacher], auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers: updatedTeachers }
     });
   };
 
@@ -1136,6 +1291,18 @@ export default function App() {
     const updated = upsertGradesIntoList(grades, [newGrade]);
     setGrades(updated);
 
+    const normalizedSubject = (newGrade.subjectName || '').trim().toLowerCase();
+    const persistedGrade =
+      updated.find(
+        (g) =>
+          g.id === newGrade.id ||
+          (g.studentId === newGrade.studentId &&
+            g.period === newGrade.period &&
+            (g.subjectId === newGrade.subjectId ||
+              (normalizedSubject !== '' &&
+                (g.subjectName || '').trim().toLowerCase() === normalizedSubject)))
+      ) || newGrade;
+
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
       institutionId: newGrade.institutionId,
@@ -1149,13 +1316,31 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ grades: updated, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: { grades: [persistedGrade], auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleUpdateGradesBatch = (incomingGrades: GradeRecord[]) => {
     if (incomingGrades.length === 0) return;
     const updated = upsertGradesIntoList(grades, incomingGrades);
     setGrades(updated);
+
+    const persistedGrades: GradeRecord[] = incomingGrades.map((ng) => {
+      const normalizedSubject = (ng.subjectName || '').trim().toLowerCase();
+      return (
+        updated.find(
+          (g) =>
+            g.id === ng.id ||
+            (g.studentId === ng.studentId &&
+              g.period === ng.period &&
+              (g.subjectId === ng.subjectId ||
+                (normalizedSubject !== '' &&
+                  (g.subjectName || '').trim().toLowerCase() === normalizedSubject)))
+        ) || ng
+      );
+    });
 
     const sample = incomingGrades[0];
     const newLog: AuditLogItem = {
@@ -1171,7 +1356,10 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ grades: updated, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: { grades: persistedGrades, auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   // Handlers para Pagamentos (Exclusivo do Tesoureiro)
@@ -1236,9 +1424,10 @@ export default function App() {
       setStudents(updatedStudents);
     }
 
+    let createdNotification: FinancialNotification | null = null;
     let updatedNotifications = financialNotifications;
     if (sendNotification && paidInvoice && targetStudent) {
-      const notif: FinancialNotification = {
+      createdNotification = {
         id: `fnotif-${Date.now()}`,
         institutionId: paidInvoice.institutionId,
         studentId: targetStudent.id,
@@ -1260,7 +1449,7 @@ export default function App() {
         sentAt: new Date().toISOString(),
         isRead: false
       };
-      updatedNotifications = [notif, ...financialNotifications];
+      updatedNotifications = [createdNotification, ...financialNotifications];
       setFinancialNotifications(updatedNotifications);
     }
 
@@ -1277,11 +1466,19 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      invoices: updated,
-      students: updatedStudents,
-      financialNotifications: updatedNotifications,
-      auditLogs: updatedLogs
+    const changedStudent =
+      paidInvoice && paidInvoice.category === 'matricula' && paidInvoice.status === 'pago' && targetStudent
+        ? updatedStudents.find((s) => s.id === targetStudent.id)
+        : undefined;
+
+    commitCloudChanges({
+      upserts: {
+        ...(paidInvoice ? { invoices: [paidInvoice] } : {}),
+        ...(changedStudent ? { students: [changedStudent] } : {}),
+        ...(createdNotification ? { financialNotifications: [createdNotification] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students: updatedStudents, teachers }
     });
   };
 
@@ -1292,9 +1489,11 @@ export default function App() {
 
     let updatedSchoolUsers = schoolUsers;
     let updatedAccounts = accounts;
+    let createdSchoolUser: SchoolUser | null = null;
+    let createdAccount: StoredCredential | null = null;
 
     if (adminUser) {
-      const newSchoolUser: SchoolUser = {
+      createdSchoolUser = {
         id: adminUser.id,
         institutionId: newInst.id,
         fullName: adminUser.fullName,
@@ -1305,10 +1504,10 @@ export default function App() {
         departmentOrClass: 'Direcção Geral / Administrador Escolar',
         createdAt: new Date().toISOString().split('T')[0]
       };
-      updatedSchoolUsers = [newSchoolUser, ...schoolUsers];
+      updatedSchoolUsers = [createdSchoolUser, ...schoolUsers];
       setSchoolUsers(updatedSchoolUsers);
 
-      updatedAccounts = storageService.upsertAccount({
+      updatedAccounts = upsertAccountInList(accounts, {
         email: adminUser.email,
         password: newInst.adminPassword || '123',
         fullName: adminUser.fullName,
@@ -1318,13 +1517,16 @@ export default function App() {
         status: 'activo'
       });
       setAccounts(updatedAccounts);
+      createdAccount =
+        updatedAccounts.find((a) => a.email.toLowerCase() === adminUser.email.trim().toLowerCase()) ||
+        null;
     }
 
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
       institutionId: newInst.id,
       institutionName: newInst.name,
-      userName: 'Administrador Geral',
+      userName: currentUser?.fullName || 'Administrador Geral',
       userRole: 'Super Admin',
       action: 'NOVA_INSTITUICAO_SAAS',
       details: `Cadastramento da instituição ${newInst.name} (${newInst.province}) com limite de ${newInst.maxClasses} turmas e administrador ${newInst.adminName || newInst.directorName}.`,
@@ -1333,21 +1535,218 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      institutions: updatedInstitutions,
-      schoolUsers: updatedSchoolUsers,
-      accounts: updatedAccounts,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: {
+        institutions: [newInst],
+        ...(createdSchoolUser ? { schoolUsers: [createdSchoolUser] } : {}),
+        ...(createdAccount ? { accounts: [createdAccount] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions: updatedInstitutions, classes, students, teachers }
     });
   };
 
   const handleUpdateInstitution = (updatedInst: Institution) => {
+    const prevInst = institutions.find((i) => i.id === updatedInst.id);
     const updated = institutions.map((i) => (i.id === updatedInst.id ? updatedInst : i));
     setInstitutions(updated);
     if (currentInstitution && currentInstitution.id === updatedInst.id) {
       setCurrentInstitution(updatedInst);
     }
-    persistState({ institutions: updated });
+
+    let updatedSchoolUsers = schoolUsers;
+    let updatedAccounts = accounts;
+    const prevAdminEmail = prevInst?.adminEmail?.trim().toLowerCase();
+    const nextAdminEmail = updatedInst.adminEmail?.trim().toLowerCase();
+    const deletedAccountEmails: string[] = [];
+    let upsertedAccount: StoredCredential | null = null;
+    let upsertedSchoolUser: SchoolUser | null = null;
+
+    if (nextAdminEmail) {
+      if (prevAdminEmail && prevAdminEmail !== nextAdminEmail) {
+        updatedAccounts = deleteAccountInList(updatedAccounts, prevAdminEmail);
+        deletedAccountEmails.push(prevAdminEmail);
+      }
+      updatedAccounts = upsertAccountInList(updatedAccounts, {
+        email: nextAdminEmail,
+        password: updatedInst.adminPassword || '123',
+        fullName: updatedInst.adminName || updatedInst.directorName,
+        role: 'director_geral',
+        institutionId: updatedInst.id,
+        institutionName: updatedInst.name,
+        status: updatedInst.status === 'active' ? 'activo' : 'inactivo'
+      });
+      setAccounts(updatedAccounts);
+      upsertedAccount =
+        updatedAccounts.find((a) => a.email.toLowerCase() === nextAdminEmail) || null;
+
+      const matchIdx = schoolUsers.findIndex(
+        (u) =>
+          u.institutionId === updatedInst.id &&
+          u.role === 'director_geral' &&
+          (u.email.toLowerCase() === prevAdminEmail || u.email.toLowerCase() === nextAdminEmail)
+      );
+      if (matchIdx >= 0) {
+        updatedSchoolUsers = schoolUsers.map((u, idx) => {
+          if (idx !== matchIdx) return u;
+          upsertedSchoolUser = {
+            ...u,
+            fullName: updatedInst.adminName || updatedInst.directorName,
+            email: nextAdminEmail,
+            phone: updatedInst.adminPhone || u.phone,
+            status: updatedInst.status === 'active' ? 'activo' : 'inactivo'
+          };
+          return upsertedSchoolUser;
+        });
+        setSchoolUsers(updatedSchoolUsers);
+      }
+    }
+
+    commitCloudChanges({
+      upserts: {
+        institutions: [updatedInst],
+        ...(upsertedSchoolUser ? { schoolUsers: [upsertedSchoolUser] } : {}),
+        ...(upsertedAccount ? { accounts: [upsertedAccount] } : {})
+      },
+      ...(deletedAccountEmails.length > 0 ? { deletes: { accounts: deletedAccountEmails } } : {}),
+      fkContext: { institutions: updated, classes, students, teachers }
+    });
+  };
+
+  const handleDeleteInstitution = (institutionId: string) => {
+    if (!isSuperAdminRole) return;
+    const targetInst = institutions.find((i) => i.id === institutionId);
+    if (!targetInst) return;
+
+    const deletedClassIds = classes
+      .filter((c) => c.institutionId === institutionId)
+      .map((c) => c.id);
+    const deletedSubjectIds = subjects
+      .filter((s) => s.institutionId === institutionId)
+      .map((s) => s.id);
+    const deletedStudentIds = students
+      .filter((s) => s.institutionId === institutionId)
+      .map((s) => s.id);
+    const deletedTeacherIds = teachers
+      .filter((t) => t.institutionId === institutionId)
+      .map((t) => t.id);
+    const deletedGradeIds = grades
+      .filter((g) => g.institutionId === institutionId)
+      .map((g) => g.id);
+    const deletedInvoiceIds = invoices
+      .filter((inv) => inv.institutionId === institutionId)
+      .map((inv) => inv.id);
+    const deletedSchoolUserIds = schoolUsers
+      .filter((u) => u.institutionId === institutionId)
+      .map((u) => u.id);
+    const deletedArchiveIds = digitalArchive
+      .filter((d) => d.institutionId === institutionId)
+      .map((d) => d.id);
+    const deletedAttendanceIds = attendanceRecords
+      .filter((a) => a.institutionId === institutionId)
+      .map((a) => a.id);
+    const deletedFinNotifIds = financialNotifications
+      .filter((n) => n.institutionId === institutionId)
+      .map((n) => n.id);
+    const deletedAnnouncementIds = announcements
+      .filter((a) => a.institutionId === institutionId)
+      .map((a) => a.id);
+    const deletedCaseIds = psychopedagogicalCases
+      .filter((c) => c.institutionId === institutionId)
+      .map((c) => c.id);
+
+    const updatedInstitutions = institutions.filter((i) => i.id !== institutionId);
+    const updatedClasses = classes.filter((c) => c.institutionId !== institutionId);
+    const updatedSubjects = subjects.filter((s) => s.institutionId !== institutionId);
+    const updatedStudents = students.filter((s) => s.institutionId !== institutionId);
+    const updatedTeachers = teachers.filter((t) => t.institutionId !== institutionId);
+    const updatedGrades = grades.filter((g) => g.institutionId !== institutionId);
+    const updatedInvoices = invoices.filter((inv) => inv.institutionId !== institutionId);
+
+    const removedEmails = new Set(
+      schoolUsers
+        .filter((u) => u.institutionId === institutionId)
+        .map((u) => u.email.toLowerCase())
+    );
+    if (targetInst.adminEmail) {
+      removedEmails.add(targetInst.adminEmail.toLowerCase());
+    }
+    const deletedAccountEmails = accounts
+      .filter(
+        (acc) =>
+          acc.role !== 'super_admin' &&
+          (acc.institutionId === institutionId || removedEmails.has(acc.email.toLowerCase()))
+      )
+      .map((acc) => acc.email.toLowerCase());
+
+    const updatedSchoolUsers = schoolUsers.filter((u) => u.institutionId !== institutionId);
+    const updatedArchive = digitalArchive.filter((d) => d.institutionId !== institutionId);
+    const updatedAttendance = attendanceRecords.filter((a) => a.institutionId !== institutionId);
+    const updatedFinNotifications = financialNotifications.filter(
+      (n) => n.institutionId !== institutionId
+    );
+    const updatedAnnouncements = announcements.filter((a) => a.institutionId !== institutionId);
+    const updatedCases = psychopedagogicalCases.filter((c) => c.institutionId !== institutionId);
+
+    const updatedAccounts = accounts.filter(
+      (acc) =>
+        acc.role === 'super_admin' ||
+        (acc.institutionId !== institutionId && !removedEmails.has(acc.email.toLowerCase()))
+    );
+
+    setInstitutions(updatedInstitutions);
+    setClasses(updatedClasses);
+    setSubjects(updatedSubjects);
+    setStudents(updatedStudents);
+    setTeachers(updatedTeachers);
+    setGrades(updatedGrades);
+    setInvoices(updatedInvoices);
+    setSchoolUsers(updatedSchoolUsers);
+    setDigitalArchive(updatedArchive);
+    setAttendanceRecords(updatedAttendance);
+    setFinancialNotifications(updatedFinNotifications);
+    setAnnouncements(updatedAnnouncements);
+    setPsychopedagogicalCases(updatedCases);
+    setAccounts(updatedAccounts);
+
+    if (currentInstitution?.id === institutionId) {
+      setCurrentInstitution(null);
+    }
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: targetInst.id,
+      institutionName: targetInst.name,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: 'REMOCAO_INSTITUICAO_SAAS',
+      details: `Eliminação da instituição "${targetInst.name}" (${targetInst.code}) e limpeza dos respectivos registos vinculados.`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    commitCloudChanges({
+      deletes: {
+        ...(deletedCaseIds.length > 0 ? { psychopedagogicalCases: deletedCaseIds } : {}),
+        ...(deletedAnnouncementIds.length > 0 ? { announcements: deletedAnnouncementIds } : {}),
+        ...(deletedFinNotifIds.length > 0 ? { financialNotifications: deletedFinNotifIds } : {}),
+        ...(deletedArchiveIds.length > 0 ? { digitalArchive: deletedArchiveIds } : {}),
+        ...(deletedAttendanceIds.length > 0 ? { attendance: deletedAttendanceIds } : {}),
+        ...(deletedInvoiceIds.length > 0 ? { invoices: deletedInvoiceIds } : {}),
+        ...(deletedGradeIds.length > 0 ? { grades: deletedGradeIds } : {}),
+        ...(deletedStudentIds.length > 0 ? { students: deletedStudentIds } : {}),
+        ...(deletedSubjectIds.length > 0 ? { subjects: deletedSubjectIds } : {}),
+        ...(deletedClassIds.length > 0 ? { classes: deletedClassIds } : {}),
+        ...(deletedTeacherIds.length > 0 ? { teachers: deletedTeacherIds } : {}),
+        ...(deletedSchoolUserIds.length > 0 ? { schoolUsers: deletedSchoolUserIds } : {}),
+        ...(deletedAccountEmails.length > 0 ? { accounts: deletedAccountEmails } : {}),
+        institutions: [institutionId]
+      },
+      upserts: {
+        auditLogs: [newLog]
+      }
+    });
   };
 
   const handleUpdateInstitutionStatus = (id: string, newStatus: 'active' | 'suspended') => {
@@ -1355,7 +1754,12 @@ export default function App() {
       inst.id === id ? { ...inst, status: newStatus } : inst
     );
     setInstitutions(updated);
-    persistState({ institutions: updated });
+    const changedInst = updated.find((i) => i.id === id);
+    if (changedInst) {
+      commitCloudChanges({
+        upserts: { institutions: [changedInst] }
+      });
+    }
   };
 
   // Handlers de Acompanhamento Psicopedagógico & Activação por Escola (Super Admin)
@@ -1413,7 +1817,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ institutions: updatedInstitutions, auditLogs: updatedLogs });
+    const changedInst = updatedInstitutions.find((i) => i.id === institutionId);
+    commitCloudChanges({
+      upserts: {
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        auditLogs: [newLog]
+      }
+    });
   };
 
   const handleBatchTogglePsychopedagogical = (institutionIds: string[], activate: boolean) => {
@@ -1457,7 +1867,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ institutions: updatedInstitutions, auditLogs: updatedLogs });
+    const changedInstitutions = updatedInstitutions.filter((inst) => idSet.has(inst.id));
+    commitCloudChanges({
+      upserts: {
+        institutions: changedInstitutions,
+        auditLogs: [newLog]
+      }
+    });
   };
 
   const handleSavePsychopedagogicalProtocol = (protocol: PsychopedagogicalProtocol) => {
@@ -1479,7 +1895,12 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ psychopedagogicalProtocols: updatedProtocols, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: {
+        psychopedagogicalProtocols: [protocol],
+        auditLogs: [newLog]
+      }
+    });
   };
 
   const handleSavePsychopedagogicalCase = (caseItem: PsychopedagogicalCase) => {
@@ -1512,7 +1933,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ psychopedagogicalCases: updatedCases, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: {
+        psychopedagogicalCases: [caseItem],
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleAddPsychopedagogicalSession = (
@@ -1531,15 +1958,16 @@ export default function App() {
       return;
     }
 
-    const updatedCases = psychopedagogicalCases.map((c) =>
-      c.id === caseId
-        ? {
-            ...c,
-            updatedAt: session.date,
-            sessions: [session, ...c.sessions]
-          }
-        : c
-    );
+    let updatedCaseObj: PsychopedagogicalCase | null = null;
+    const updatedCases = psychopedagogicalCases.map((c) => {
+      if (c.id !== caseId) return c;
+      updatedCaseObj = {
+        ...c,
+        updatedAt: session.date,
+        sessions: [session, ...c.sessions]
+      };
+      return updatedCaseObj;
+    });
     setPsychopedagogicalCases(updatedCases);
 
     const newLog: AuditLogItem = {
@@ -1555,7 +1983,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ psychopedagogicalCases: updatedCases, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: {
+        ...(updatedCaseObj ? { psychopedagogicalCases: [updatedCaseObj] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   // Handlers para Matrícula em Massa e Utilizadores da Escola
@@ -1587,9 +2021,11 @@ export default function App() {
       if (updatedCurrInst) setCurrentInstitution(updatedCurrInst);
     }
 
+    let updatedAccounts = accounts;
+    const upsertedAccountEmails = new Set<string>();
     newStudentsList.forEach((stu) => {
       if (stu.email) {
-        storageService.upsertAccount({
+        updatedAccounts = upsertAccountInList(updatedAccounts, {
           email: stu.email,
           password: stu.portalPassword || '123',
           fullName: `${stu.fullName} (Estudante)`,
@@ -1598,10 +2034,13 @@ export default function App() {
           institutionName: currentInstitution?.name,
           status: 'activo'
         });
+        upsertedAccountEmails.add(stu.email.trim().toLowerCase());
       }
     });
-    const latestAccounts = storageService.getAccounts();
-    setAccounts(latestAccounts);
+    setAccounts(updatedAccounts);
+    const upsertedAccounts = updatedAccounts.filter((a) =>
+      upsertedAccountEmails.has(a.email.toLowerCase())
+    );
 
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
@@ -1616,12 +2055,26 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      students: updatedStudents,
-      classes: updatedClasses,
-      institutions: updatedInstitutions,
-      accounts: latestAccounts,
-      auditLogs: updatedLogs
+    const affectedClassIds = new Set(newStudentsList.map((s) => s.classId).filter(Boolean));
+    const changedClasses = updatedClasses.filter((c) => affectedClassIds.has(c.id));
+    const changedInst = currentInstitution
+      ? updatedInstitutions.find((i) => i.id === currentInstitution.id)
+      : undefined;
+
+    commitCloudChanges({
+      upserts: {
+        students: newStudentsList,
+        ...(changedClasses.length > 0 ? { classes: changedClasses } : {}),
+        ...(changedInst ? { institutions: [changedInst] } : {}),
+        ...(upsertedAccounts.length > 0 ? { accounts: upsertedAccounts } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes: updatedClasses,
+        students: updatedStudents,
+        teachers
+      }
     });
   };
 
@@ -1690,7 +2143,7 @@ export default function App() {
 
     const targetInstObj = institutions.find((i) => i.id === newUser.institutionId);
     const isMunDirector = newUser.role === 'director_municipal';
-    const updatedAccounts = storageService.upsertAccount({
+    const updatedAccounts = upsertAccountInList(accounts, {
       email: newUser.email,
       password,
       fullName: newUser.fullName,
@@ -1704,8 +2157,12 @@ export default function App() {
       status: newUser.status
     });
     setAccounts(updatedAccounts);
+    const upsertedAccount = updatedAccounts.find(
+      (a) => a.email.toLowerCase() === newUser.email.trim().toLowerCase()
+    );
 
     let updatedTeachers = teachers;
+    let changedTeacher: Teacher | null = null;
     if (newUser.role === 'professor') {
       const existingIdx = teachers.findIndex(
         (t) =>
@@ -1717,19 +2174,19 @@ export default function App() {
         assignedByClass || []
       );
       if (existingIdx >= 0) {
-        updatedTeachers = teachers.map((t, idx) =>
-          idx === existingIdx
-            ? {
-                ...t,
-                fullName: newUser.fullName,
-                phone: newUser.phone || t.phone,
-                assignedClasses:
-                  assignedByClass !== undefined ? assignedList : t.assignedClasses
-              }
-            : t
-        );
+        updatedTeachers = teachers.map((t, idx) => {
+          if (idx !== existingIdx) return t;
+          changedTeacher = {
+            ...t,
+            fullName: newUser.fullName,
+            phone: newUser.phone || t.phone,
+            assignedClasses:
+              assignedByClass !== undefined ? assignedList : t.assignedClasses
+          };
+          return changedTeacher;
+        });
       } else {
-        const syncedTeacher: Teacher = {
+        changedTeacher = {
           id: `prof-${Date.now()}`,
           institutionId: newUser.institutionId,
           staffCode: `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1742,7 +2199,7 @@ export default function App() {
           assignedClasses: assignedList,
           isActive: newUser.status === 'activo'
         };
-        updatedTeachers = [syncedTeacher, ...teachers];
+        updatedTeachers = [changedTeacher, ...teachers];
       }
       setTeachers(updatedTeachers);
     }
@@ -1764,11 +2221,14 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      schoolUsers: updatedUsers,
-      accounts: updatedAccounts,
-      teachers: updatedTeachers,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: {
+        schoolUsers: [newUser],
+        ...(upsertedAccount ? { accounts: [upsertedAccount] } : {}),
+        ...(changedTeacher ? { teachers: [changedTeacher] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers: updatedTeachers }
     });
   };
 
@@ -1788,10 +2248,18 @@ export default function App() {
       : [updatedUser, ...schoolUsers];
     setSchoolUsers(updatedUsers);
 
-    const updatedAccounts = storageService.updateAccountStatus(updatedUser.email, updatedUser.status);
+    const updatedAccounts = updateAccountStatusInList(
+      accounts,
+      updatedUser.email,
+      updatedUser.status
+    );
     setAccounts(updatedAccounts);
+    const changedAccount = updatedAccounts.find(
+      (a) => a.email.toLowerCase() === updatedUser.email.trim().toLowerCase()
+    );
 
     let updatedTeachers = teachers;
+    let changedTeacher: Teacher | null = null;
     if (updatedUser.role === 'professor' && assignedByClass !== undefined) {
       const existingIdx = teachers.findIndex(
         (t) =>
@@ -1805,19 +2273,19 @@ export default function App() {
           assignedByClass,
           existingTeacher.assignedClasses
         );
-        updatedTeachers = teachers.map((t, idx) =>
-          idx === existingIdx
-            ? {
-                ...t,
-                fullName: updatedUser.fullName,
-                phone: updatedUser.phone || t.phone,
-                assignedClasses: nextAssigned,
-                isActive: updatedUser.status === 'activo'
-              }
-            : t
-        );
+        updatedTeachers = teachers.map((t, idx) => {
+          if (idx !== existingIdx) return t;
+          changedTeacher = {
+            ...t,
+            fullName: updatedUser.fullName,
+            phone: updatedUser.phone || t.phone,
+            assignedClasses: nextAssigned,
+            isActive: updatedUser.status === 'activo'
+          };
+          return changedTeacher;
+        });
       } else {
-        const syncedTeacher: Teacher = {
+        changedTeacher = {
           id: `prof-${Date.now()}`,
           institutionId: updatedUser.institutionId,
           staffCode: `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1833,21 +2301,36 @@ export default function App() {
           ),
           isActive: updatedUser.status === 'activo'
         };
-        updatedTeachers = [syncedTeacher, ...teachers];
+        updatedTeachers = [changedTeacher, ...teachers];
       }
       setTeachers(updatedTeachers);
     }
 
-    persistState({
-      schoolUsers: updatedUsers,
-      accounts: updatedAccounts,
-      teachers: updatedTeachers
+    commitCloudChanges({
+      upserts: {
+        schoolUsers: [updatedUser],
+        ...(changedAccount ? { accounts: [changedAccount] } : {}),
+        ...(changedTeacher ? { teachers: [changedTeacher] } : {})
+      },
+      fkContext: { institutions, classes, students, teachers: updatedTeachers }
     });
   };
 
   const handleResetUserPassword = (user: SchoolUser, newPassword: string) => {
-    const updatedAccounts = storageService.updateAccountPassword(user.email, newPassword);
+    const cleanEmail = user.email.trim().toLowerCase();
+    const existingAccount = accounts.find((a) => a.email.toLowerCase() === cleanEmail);
+    const updatedAccounts = existingAccount
+      ? updateAccountPasswordInList(accounts, cleanEmail, newPassword)
+      : upsertAccountInList(accounts, {
+          email: cleanEmail,
+          password: newPassword,
+          fullName: user.fullName,
+          role: user.role,
+          institutionId: user.institutionId,
+          status: user.status
+        });
     setAccounts(updatedAccounts);
+    const changedAccount = updatedAccounts.find((a) => a.email.toLowerCase() === cleanEmail);
 
     const newLog: AuditLogItem = {
       id: `log-${Date.now()}`,
@@ -1856,15 +2339,18 @@ export default function App() {
       userName: currentUser?.fullName || 'Administrador Escolar',
       userRole: 'Director Geral',
       action: 'REDEFINICAO_SENHA',
-      details: `Senha do utilizador ${user.fullName} (${user.email}) redefinida na memória local.`,
+      details: `Senha do utilizador ${user.fullName} (${user.email}) redefinida no banco de dados Supabase.`,
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
     };
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      accounts: updatedAccounts,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: {
+        ...(changedAccount ? { accounts: [changedAccount] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
     });
   };
 
@@ -1874,9 +2360,12 @@ export default function App() {
     setSchoolUsers(updatedUsers);
 
     let updatedAccounts = accounts;
+    const deletedAccountEmails: string[] = [];
     if (targetUser) {
-      updatedAccounts = storageService.deleteAccountByEmail(targetUser.email);
+      const emailLower = targetUser.email.trim().toLowerCase();
+      updatedAccounts = deleteAccountInList(accounts, emailLower);
       setAccounts(updatedAccounts);
+      deletedAccountEmails.push(emailLower);
     }
 
     const newLog: AuditLogItem = {
@@ -1892,10 +2381,210 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      schoolUsers: updatedUsers,
-      accounts: updatedAccounts,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      deletes: {
+        schoolUsers: [userId],
+        ...(deletedAccountEmails.length > 0 ? { accounts: deletedAccountEmails } : {})
+      },
+      upserts: {
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
+    });
+  };
+
+  const handleUpdateSuperUser = (updatedUser: SchoolUser, previousEmail?: string) => {
+    if (!isSuperAdminRole) return;
+    const oldEmailLower = (previousEmail || updatedUser.email).trim().toLowerCase();
+    const newEmailLower = updatedUser.email.trim().toLowerCase();
+    const isMunDirector = updatedUser.role === 'director_municipal';
+
+    const normalizedUser: SchoolUser = {
+      ...updatedUser,
+      id:
+        updatedUser.id.startsWith('admin-') || updatedUser.id.startsWith('mun-')
+          ? `su-${Date.now()}`
+          : updatedUser.id,
+      email: newEmailLower
+    };
+
+    const existingIdx = schoolUsers.findIndex(
+      (u) => u.id === updatedUser.id || u.email.toLowerCase() === oldEmailLower
+    );
+    const updatedUsers =
+      existingIdx >= 0
+        ? schoolUsers.map((u, idx) => (idx === existingIdx ? normalizedUser : u))
+        : [normalizedUser, ...schoolUsers];
+    setSchoolUsers(updatedUsers);
+
+    const existingAccount = accounts.find((a) => a.email.toLowerCase() === oldEmailLower);
+    let workingAccounts = accounts;
+    const deletedAccountEmails: string[] = [];
+    if (oldEmailLower !== newEmailLower) {
+      workingAccounts = deleteAccountInList(workingAccounts, oldEmailLower);
+      deletedAccountEmails.push(oldEmailLower);
+    }
+    const targetInstObj = institutions.find((i) => i.id === normalizedUser.institutionId);
+    const updatedAccounts = upsertAccountInList(workingAccounts, {
+      email: newEmailLower,
+      password: existingAccount?.password || '123',
+      fullName: normalizedUser.fullName,
+      role: normalizedUser.role,
+      institutionId: isMunDirector ? undefined : normalizedUser.institutionId,
+      institutionName: isMunDirector
+        ? `Direcção Municipal da Educação de ${normalizedUser.municipality || 'Angola'}`
+        : targetInstObj?.name,
+      municipality: normalizedUser.municipality,
+      province: normalizedUser.province,
+      status: normalizedUser.status
+    });
+    setAccounts(updatedAccounts);
+    const upsertedAccount = updatedAccounts.find((a) => a.email.toLowerCase() === newEmailLower);
+
+    let updatedInstitutions = institutions;
+    const changedInstitutions: Institution[] = [];
+    if (
+      updatedUser.id.startsWith('admin-') ||
+      institutions.some((inst) => (inst.adminEmail || '').toLowerCase() === oldEmailLower)
+    ) {
+      updatedInstitutions = institutions.map((inst) => {
+        const matchesInst =
+          updatedUser.id === `admin-${inst.id}` ||
+          (inst.adminEmail || '').toLowerCase() === oldEmailLower;
+        if (!matchesInst) return inst;
+        const nextInst = {
+          ...inst,
+          adminName: normalizedUser.fullName,
+          directorName: normalizedUser.fullName,
+          adminEmail: newEmailLower,
+          adminPhone: normalizedUser.phone || inst.adminPhone
+        };
+        changedInstitutions.push(nextInst);
+        return nextInst;
+      });
+      setInstitutions(updatedInstitutions);
+    }
+
+    const changedTeachers: Teacher[] = [];
+    const updatedTeachers = teachers.map((t) => {
+      if (t.email.toLowerCase() !== oldEmailLower) return t;
+      const nextTeacher = {
+        ...t,
+        fullName: normalizedUser.fullName,
+        email: newEmailLower,
+        phone: normalizedUser.phone || t.phone,
+        isActive: normalizedUser.status === 'activo'
+      };
+      changedTeachers.push(nextTeacher);
+      return nextTeacher;
+    });
+    setTeachers(updatedTeachers);
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId: isMunDirector ? undefined : normalizedUser.institutionId,
+      institutionName: isMunDirector
+        ? `Direcção Municipal de ${normalizedUser.municipality || 'Educação'}`
+        : targetInstObj?.name,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: 'ACTUALIZACAO_UTILIZADOR_SAAS',
+      details: `Actualização dos dados de ${normalizedUser.fullName} (${normalizedUser.email}) — perfil ${normalizedUser.role.replace(/_/g, ' ')}.`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    commitCloudChanges({
+      upserts: {
+        schoolUsers: [normalizedUser],
+        ...(upsertedAccount ? { accounts: [upsertedAccount] } : {}),
+        ...(changedInstitutions.length > 0 ? { institutions: changedInstitutions } : {}),
+        ...(changedTeachers.length > 0 ? { teachers: changedTeachers } : {}),
+        auditLogs: [newLog]
+      },
+      ...(deletedAccountEmails.length > 0 ? { deletes: { accounts: deletedAccountEmails } } : {}),
+      fkContext: {
+        institutions: updatedInstitutions,
+        classes,
+        students,
+        teachers: updatedTeachers
+      }
+    });
+  };
+
+  const handleDeleteSuperUser = (targetUser: SchoolUser) => {
+    if (!isSuperAdminRole) return;
+    const targetEmailLower = targetUser.email.trim().toLowerCase();
+    if (currentUser?.email.toLowerCase() === targetEmailLower) {
+      setAccessDeniedNotice('Não é possível apagar a conta do Super Administrador em sessão activa.');
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
+
+    const deletedSchoolUserIds = schoolUsers
+      .filter((u) => u.id === targetUser.id || u.email.toLowerCase() === targetEmailLower)
+      .map((u) => u.id);
+
+    const updatedUsers = schoolUsers.filter(
+      (u) => u.id !== targetUser.id && u.email.toLowerCase() !== targetEmailLower
+    );
+    setSchoolUsers(updatedUsers);
+
+    const updatedAccounts = deleteAccountInList(accounts, targetEmailLower);
+    setAccounts(updatedAccounts);
+
+    let updatedInstitutions = institutions;
+    const changedInstitutions: Institution[] = [];
+    const touchesAdmin = institutions.some(
+      (inst) =>
+        targetUser.id === `admin-${inst.id}` ||
+        (inst.adminEmail || '').toLowerCase() === targetEmailLower
+    );
+    if (touchesAdmin) {
+      updatedInstitutions = institutions.map((inst) => {
+        if (
+          targetUser.id === `admin-${inst.id}` ||
+          (inst.adminEmail || '').toLowerCase() === targetEmailLower
+        ) {
+          const nextInst = {
+            ...inst,
+            adminEmail: '',
+            adminName: ''
+          };
+          changedInstitutions.push(nextInst);
+          return nextInst;
+        }
+        return inst;
+      });
+      setInstitutions(updatedInstitutions);
+    }
+
+    const newLog: AuditLogItem = {
+      id: `log-${Date.now()}`,
+      institutionId:
+        targetUser.institutionId && targetUser.institutionId !== 'municipal'
+          ? targetUser.institutionId
+          : undefined,
+      userName: currentUser?.fullName || 'Super Administrador',
+      userRole: 'Super Admin',
+      action: 'REMOCAO_UTILIZADOR_SAAS',
+      details: `Eliminação da conta de ${targetUser.fullName} (${targetUser.email}) pelo Super Administrador.`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+    };
+    const updatedLogs = [newLog, ...auditLogs];
+    setAuditLogs(updatedLogs);
+
+    commitCloudChanges({
+      deletes: {
+        ...(deletedSchoolUserIds.length > 0 ? { schoolUsers: deletedSchoolUserIds } : {}),
+        accounts: [targetEmailLower]
+      },
+      upserts: {
+        ...(changedInstitutions.length > 0 ? { institutions: changedInstitutions } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions: updatedInstitutions, classes, students, teachers }
     });
   };
 
@@ -2015,10 +2704,11 @@ export default function App() {
       setStudents(updatedStudents);
     }
 
+    let createdNotification: FinancialNotification | null = null;
     let updatedNotifications = financialNotifications;
     if (sendNotification && targetStudent) {
       const isPaid = stampedInvoice.status === 'pago';
-      const notif: FinancialNotification = {
+      createdNotification = {
         id: `fnotif-${Date.now()}`,
         institutionId: stampedInvoice.institutionId,
         studentId: targetStudent.id,
@@ -2052,7 +2742,7 @@ export default function App() {
         sentAt: new Date().toISOString(),
         isRead: false
       };
-      updatedNotifications = [notif, ...financialNotifications];
+      updatedNotifications = [createdNotification, ...financialNotifications];
       setFinancialNotifications(updatedNotifications);
     }
 
@@ -2069,11 +2759,19 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      invoices: updated,
-      students: updatedStudents,
-      financialNotifications: updatedNotifications,
-      auditLogs: updatedLogs
+    const changedStudent =
+      stampedInvoice.category === 'matricula' && stampedInvoice.status === 'pago' && targetStudent
+        ? updatedStudents.find((s) => s.id === targetStudent.id)
+        : undefined;
+
+    commitCloudChanges({
+      upserts: {
+        invoices: [stampedInvoice],
+        ...(changedStudent ? { students: [changedStudent] } : {}),
+        ...(createdNotification ? { financialNotifications: [createdNotification] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students: updatedStudents, teachers }
     });
   };
 
@@ -2144,9 +2842,10 @@ export default function App() {
     );
     setStudents(updatedStudents);
 
+    let createdNotification: FinancialNotification | null = null;
     let updatedNotifications = financialNotifications;
     if (payload.sendNotification) {
-      const notif: FinancialNotification = {
+      createdNotification = {
         id: `fnotif-${Date.now()}`,
         institutionId: targetStudent.institutionId,
         studentId: targetStudent.id,
@@ -2174,7 +2873,7 @@ export default function App() {
         sentAt: new Date().toISOString(),
         isRead: false
       };
-      updatedNotifications = [notif, ...financialNotifications];
+      updatedNotifications = [createdNotification, ...financialNotifications];
       setFinancialNotifications(updatedNotifications);
     }
 
@@ -2191,11 +2890,15 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      invoices: updatedInvoices,
-      students: updatedStudents,
-      financialNotifications: updatedNotifications,
-      auditLogs: updatedLogs
+    const changedStudent = updatedStudents.find((s) => s.id === targetStudent.id);
+    commitCloudChanges({
+      upserts: {
+        invoices: [newInvoice],
+        ...(changedStudent ? { students: [changedStudent] } : {}),
+        ...(createdNotification ? { financialNotifications: [createdNotification] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students: updatedStudents, teachers }
     });
   };
 
@@ -2260,9 +2963,12 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      financialNotifications: updatedNotifications,
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: {
+        financialNotifications: createdNotifications,
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
     });
   };
 
@@ -2275,13 +2981,21 @@ export default function App() {
       }
     }
     const nowIso = new Date().toISOString();
-    const updatedNotifications = financialNotifications.map((n) =>
-      n.id === notificationId && !n.isRead
-        ? { ...n, isRead: true, readAt: nowIso }
-        : n
-    );
+    let changedNotif: FinancialNotification | null = null;
+    const updatedNotifications = financialNotifications.map((n) => {
+      if (n.id === notificationId && !n.isRead) {
+        changedNotif = { ...n, isRead: true, readAt: nowIso };
+        return changedNotif;
+      }
+      return n;
+    });
     setFinancialNotifications(updatedNotifications);
-    persistState({ financialNotifications: updatedNotifications });
+    if (changedNotif) {
+      commitCloudChanges({
+        upserts: { financialNotifications: [changedNotif] },
+        fkContext: { institutions, classes, students, teachers }
+      });
+    }
   };
 
   // Handlers de Comunicados Oficiais (Super Admin -> Escolas | Admin Escolar -> Membros da Escola)
@@ -2334,7 +3048,12 @@ export default function App() {
       const updatedLogs = [newLog, ...auditLogs];
       setAuditLogs(updatedLogs);
 
-      persistState({ announcements: updatedAnnouncements, auditLogs: updatedLogs });
+      commitCloudChanges({
+        upserts: {
+          announcements: [created],
+          auditLogs: [newLog]
+        }
+      });
       return;
     }
 
@@ -2403,7 +3122,13 @@ export default function App() {
       const updatedLogs = [newLog, ...auditLogs];
       setAuditLogs(updatedLogs);
 
-      persistState({ announcements: updatedAnnouncements, auditLogs: updatedLogs });
+      commitCloudChanges({
+        upserts: {
+          announcements: [created],
+          auditLogs: [newLog]
+        },
+        fkContext: { institutions, classes, students, teachers }
+      });
     }
   };
 
@@ -2412,21 +3137,28 @@ export default function App() {
     if (!readKey) return;
     if (!scopedAnnouncements.some((a) => a.id === announcementId)) return;
 
-    let changed = false;
+    let changedAnnouncement: Announcement | null = null;
     const updated = announcements.map((a) => {
       if (a.id !== announcementId) return a;
       const existing = a.readByUserKeys || [];
       if (existing.some((k) => k.trim().toLowerCase() === readKey)) return a;
-      changed = true;
-      return {
+      changedAnnouncement = {
         ...a,
         readByUserKeys: [...existing, readKey]
       };
+      return changedAnnouncement;
     });
 
-    if (changed) {
+    if (changedAnnouncement) {
       setAnnouncements(updated);
-      persistState({ announcements: updated });
+      markAnnouncementReadInSupabase(announcementId, readKey).then((ok) => {
+        if (!ok && (isSuperAdminRole || isSchoolAdminRole) && changedAnnouncement) {
+          commitCloudChanges({
+            upserts: { announcements: [changedAnnouncement] },
+            fkContext: { institutions, classes, students, teachers }
+          });
+        }
+      });
     }
   };
 
@@ -2451,7 +3183,9 @@ export default function App() {
 
     const updated = announcements.filter((a) => a.id !== announcementId);
     setAnnouncements(updated);
-    persistState({ announcements: updated });
+    commitCloudChanges({
+      deletes: { announcements: [announcementId] }
+    });
   };
 
   // Handlers para Arquivo Digital Escolar (com Supabase Storage para documentos pessoais)
@@ -2511,16 +3245,19 @@ export default function App() {
     ];
     setDigitalArchive(updatedArchive);
 
-    // Se for a fotografia tipo passe do aluno no Supabase Storage, actualizar a foto do perfil do aluno
-    let updatedStudentsList: Student[] | undefined;
+    let changedStudent: Student | undefined;
     if (
       savedDoc.category === 'fotografia_passe' &&
       savedDoc.fileUrl &&
       savedDoc.fileUrl.startsWith('https://')
     ) {
-      updatedStudentsList = students.map((stu) =>
-        stu.id === savedDoc.studentId ? { ...stu, photoUrl: savedDoc.fileUrl } : stu
-      );
+      const updatedStudentsList = students.map((stu) => {
+        if (stu.id === savedDoc.studentId) {
+          changedStudent = { ...stu, photoUrl: savedDoc.fileUrl };
+          return changedStudent;
+        }
+        return stu;
+      });
       setStudents(updatedStudentsList);
     }
 
@@ -2537,10 +3274,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({
-      digitalArchive: updatedArchive,
-      ...(updatedStudentsList ? { students: updatedStudentsList } : {}),
-      auditLogs: updatedLogs
+    commitCloudChanges({
+      upserts: {
+        digitalArchive: [savedDoc],
+        ...(changedStudent ? { students: [changedStudent] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
     });
   };
 
@@ -2550,18 +3290,19 @@ export default function App() {
     reviewNotes?: string
   ) => {
     const reviewerRoleLabel = isProfessorRole ? 'Docente / Professor' : 'Administrador Escolar';
-    const updatedArchive = digitalArchive.map((doc) =>
-      doc.id === docId
-        ? {
-            ...doc,
-            status,
-            reviewedByName: currentUser?.fullName || reviewerRoleLabel,
-            reviewedByRole: reviewerRoleLabel,
-            reviewedAt: new Date().toISOString(),
-            reviewNotes
-          }
-        : doc
-    );
+    let changedDoc: DigitalArchiveDocument | null = null;
+    const updatedArchive = digitalArchive.map((doc) => {
+      if (doc.id !== docId) return doc;
+      changedDoc = {
+        ...doc,
+        status,
+        reviewedByName: currentUser?.fullName || reviewerRoleLabel,
+        reviewedByRole: reviewerRoleLabel,
+        reviewedAt: new Date().toISOString(),
+        reviewNotes
+      };
+      return changedDoc;
+    });
     setDigitalArchive(updatedArchive);
 
     const target = digitalArchive.find((d) => d.id === docId);
@@ -2578,7 +3319,13 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ digitalArchive: updatedArchive, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: {
+        ...(changedDoc ? { digitalArchive: [changedDoc] } : {}),
+        auditLogs: [newLog]
+      },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleDeleteArchiveDocument = (docId: string) => {
@@ -2604,7 +3351,9 @@ export default function App() {
 
     const updatedArchive = digitalArchive.filter((d) => d.id !== docId);
     setDigitalArchive(updatedArchive);
-    persistState({ digitalArchive: updatedArchive });
+    commitCloudChanges({
+      deletes: { digitalArchive: [docId] }
+    });
   };
 
   // Handlers para Registo Diário de Frequência e Justificações
@@ -2623,6 +3372,10 @@ export default function App() {
 
     const incomingMap = new Map<string, AttendanceRecord>();
     newRecords.forEach((rec) => incomingMap.set(matchKey(rec), rec));
+
+    const replacedIds = attendanceRecords
+      .filter((existing) => incomingMap.has(matchKey(existing)) && !newRecords.some((n) => n.id === existing.id))
+      .map((existing) => existing.id);
 
     const remaining = attendanceRecords.filter(
       (existing) => !incomingMap.has(matchKey(existing)) && !newRecords.some((n) => n.id === existing.id)
@@ -2646,7 +3399,11 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ attendance: updatedAttendance, auditLogs: updatedLogs });
+    commitCloudChanges({
+      ...(replacedIds.length > 0 ? { deletes: { attendance: replacedIds } } : {}),
+      upserts: { attendance: newRecords, auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleSubmitAbsenceJustification = (payload: {
@@ -2676,22 +3433,22 @@ export default function App() {
     );
 
     let updatedAttendance: AttendanceRecord[];
+    let changedRecord: AttendanceRecord;
     if (existing) {
+      changedRecord = {
+        ...existing,
+        status: existing.status === 'falta_justificada' ? 'falta_justificada' : 'falta_injustificada',
+        justificationStatus: 'pendente',
+        justificationSource: 'sistema',
+        justificationReason: payload.reason,
+        justificationSubmittedAt: nowIso,
+        justificationSubmittedBy: submitterName
+      };
       updatedAttendance = attendanceRecords.map((r) =>
-        r.id === existing.id
-          ? {
-              ...r,
-              status: r.status === 'falta_justificada' ? 'falta_justificada' : 'falta_injustificada',
-              justificationStatus: 'pendente',
-              justificationSource: 'sistema',
-              justificationReason: payload.reason,
-              justificationSubmittedAt: nowIso,
-              justificationSubmittedBy: submitterName
-            }
-          : r
+        r.id === existing.id ? changedRecord : r
       );
     } else {
-      const created: AttendanceRecord = {
+      changedRecord = {
         id: `att-sys-${Date.now()}`,
         institutionId: payload.student.institutionId,
         studentId: payload.student.id,
@@ -2710,7 +3467,7 @@ export default function App() {
         justificationSubmittedAt: nowIso,
         justificationSubmittedBy: submitterName
       };
-      updatedAttendance = [created, ...attendanceRecords];
+      updatedAttendance = [changedRecord, ...attendanceRecords];
     }
 
     setAttendanceRecords(updatedAttendance);
@@ -2728,7 +3485,10 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ attendance: updatedAttendance, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: { attendance: [changedRecord], auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
   const handleValidateJustification = (payload: {
@@ -2767,26 +3527,26 @@ export default function App() {
     );
 
     let updatedAttendance: AttendanceRecord[];
-    let targetStudentName = existing?.studentName || payload.student?.fullName || 'Aluno';
+    let changedRecord: AttendanceRecord;
+    const targetStudentName = existing?.studentName || payload.student?.fullName || 'Aluno';
 
     if (existing) {
+      changedRecord = {
+        ...existing,
+        status: payload.decision === 'validada' ? 'falta_justificada' : 'falta_injustificada',
+        justificationStatus: payload.decision,
+        justificationSource: payload.source,
+        justificationReason: payload.reason || existing.justificationReason,
+        validatedByTeacherId: teacherId,
+        validatedByTeacherName: teacherName,
+        validatedAt: nowIso,
+        validationNotes: payload.validationNotes
+      };
       updatedAttendance = attendanceRecords.map((r) =>
-        r.id === existing.id
-          ? {
-              ...r,
-              status: payload.decision === 'validada' ? 'falta_justificada' : 'falta_injustificada',
-              justificationStatus: payload.decision,
-              justificationSource: payload.source,
-              justificationReason: payload.reason || r.justificationReason,
-              validatedByTeacherId: teacherId,
-              validatedByTeacherName: teacherName,
-              validatedAt: nowIso,
-              validationNotes: payload.validationNotes
-            }
-          : r
+        r.id === existing.id ? changedRecord : r
       );
     } else if (payload.student && payload.date && payload.subjectName) {
-      const created: AttendanceRecord = {
+      changedRecord = {
         id: `att-pres-${Date.now()}`,
         institutionId: payload.student.institutionId,
         studentId: payload.student.id,
@@ -2812,7 +3572,7 @@ export default function App() {
         validatedAt: nowIso,
         validationNotes: payload.validationNotes
       };
-      updatedAttendance = [created, ...attendanceRecords];
+      updatedAttendance = [changedRecord, ...attendanceRecords];
     } else {
       return;
     }
@@ -2837,80 +3597,75 @@ export default function App() {
     const updatedLogs = [newLog, ...auditLogs];
     setAuditLogs(updatedLogs);
 
-    persistState({ attendance: updatedAttendance, auditLogs: updatedLogs });
+    commitCloudChanges({
+      upserts: { attendance: [changedRecord], auditLogs: [newLog] },
+      fkContext: { institutions, classes, students, teachers }
+    });
   };
 
-  // Handlers de Autenticação (Login e Logout)
-  const handleLogin = (user: UserProfile, inst: Institution | null) => {
+  // Handlers de Autenticação (Login e Logout 100% Supabase)
+  const handleLogin = async (user: UserProfile, inst: Institution | null) => {
     const safeInst =
-      user.role === 'super_admin' || user.role === 'director_municipal' ? null : inst;
+      user.role === 'super_admin' || user.role === 'director_municipal'
+        ? null
+        : inst ||
+          (user.institutionId ? institutions.find((i) => i.id === user.institutionId) || null : null);
     setDocStudentTarget(undefined);
     setDocTypeTarget(undefined);
     setNavDeepLink(null);
     setAccessDeniedNotice(null);
-    setAccounts(storageService.getAccounts());
     setCurrentUser(user);
     setCurrentInstitution(safeInst);
     setActiveRole(user.role);
-    setCurrentTab(getDefaultTabForRole(user.role, Boolean(safeInst)));
-    localStorage.setItem('neuroeduca_user', JSON.stringify(user));
+    setCurrentTab(getDefaultTabForRole(user.role));
 
-    // Sincronizar dados mais recentes da nuvem Supabase após autenticação (necessário quando RLS exige sessão JWT)
-    const cfg = getSupabaseConfig();
-    if (cfg.url && cfg.anonKey) {
-      pullSupabaseDataToLocal()
-        .then((pullRes) => {
-          if (!pullRes.success || !pullRes.bundle) return;
-          const b = pullRes.bundle;
-          if (Array.isArray(b.institutions) && b.institutions.length > 0) {
-            setInstitutions(b.institutions);
-            if (user.role !== 'super_admin' && user.role !== 'director_municipal') {
-              const resolvedInst =
-                b.institutions.find((i) => i.id === (user.institutionId || safeInst?.id)) ||
-                b.institutions[0];
-              if (resolvedInst) {
-                setCurrentInstitution(resolvedInst);
-              }
-            }
-          }
-          if (Array.isArray(b.classes)) setClasses(b.classes);
-          if (Array.isArray(b.subjects)) setSubjects(b.subjects);
-          if (Array.isArray(b.students)) setStudents(b.students);
-          if (Array.isArray(b.teachers)) setTeachers(b.teachers);
-          if (Array.isArray(b.grades)) setGrades(b.grades);
-          if (Array.isArray(b.invoices)) setInvoices(b.invoices);
-          if (Array.isArray(b.auditLogs)) setAuditLogs(b.auditLogs);
-          if (Array.isArray(b.schoolUsers)) setSchoolUsers(b.schoolUsers);
-          if (Array.isArray(b.accounts)) setAccounts(b.accounts);
-          if (Array.isArray(b.digitalArchive)) setDigitalArchive(b.digitalArchive);
-          if (Array.isArray(b.attendance)) setAttendanceRecords(b.attendance);
-          if (Array.isArray(b.financialNotifications)) {
-            setFinancialNotifications(b.financialNotifications);
-          }
-          if (Array.isArray(b.announcements)) setAnnouncements(b.announcements);
-          if (Array.isArray(b.psychopedagogicalProtocols)) {
-            setPsychopedagogicalProtocols(b.psychopedagogicalProtocols);
-          }
-          if (Array.isArray(b.psychopedagogicalCases)) {
-            setPsychopedagogicalCases(b.psychopedagogicalCases);
-          }
-          storageService.saveAll(b, {
-            preserveUpdatedAt: pullRes.cloudUpdatedAt || new Date().toISOString()
-          });
-        })
-        .catch(() => {});
+    // Sincronizar dados mais recentes directamente do Supabase após autenticação
+    setIsLoadingCloudData(true);
+    try {
+      await fetchServerSupabaseStatus();
+      const pullRes = await pullSupabaseDataToLocal();
+      if (pullRes.bundle) {
+        applyBundleToState(pullRes.bundle, {
+          role: user.role,
+          preferredInstitutionId: user.institutionId || safeInst?.id
+        });
+        setCurrentTab(getDefaultTabForRole(user.role));
+      } else if (pullRes.errors?.length) {
+        showSyncErrorNotice(pullRes.errors[0]);
+      }
+    } catch {
+      // Estado mantém sessão autenticada enquanto a ligação estabiliza
+    } finally {
+      setIsLoadingCloudData(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await logoutFromSupabase();
     clearSupabaseAuthSession();
+    const empty = createEmptyBundle();
+    applyBundleToState(empty, { role: 'director_geral' });
     setDocStudentTarget(undefined);
     setDocTypeTarget(undefined);
     setNavDeepLink(null);
     setAccessDeniedNotice(null);
+    setCurrentInstitution(null);
     setCurrentUser(null);
-    localStorage.removeItem('neuroeduca_user');
   };
+
+  if (isRestoringSession) {
+    return (
+      <div className="min-h-screen bg-[#f3f7f4] flex flex-col items-center justify-center p-6 text-slate-700 font-sans">
+        <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm px-8 py-7 flex flex-col items-center gap-3 max-w-sm w-full text-center">
+          <div className="w-10 h-10 rounded-full border-3 border-emerald-600 border-t-transparent animate-spin" />
+          <p className="text-sm font-bold text-slate-900">NEUROEDUCA</p>
+          <p className="text-xs text-slate-500">
+            A validar sessão segura na nuvem Supabase...
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // Se o utilizador não estiver autenticado, exibe a Página de Login
   if (!currentUser) {
@@ -3004,6 +3759,23 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="flex-1 p-4 sm:p-6 lg:p-7 max-w-[1440px] mx-auto w-full overflow-y-auto pb-24 lg:pb-10">
+          {/* Banner de Erro de Sincronização Supabase */}
+          {syncNotice && (
+            <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="font-bold text-amber-800">Sincronização Supabase:</span>
+                <span className="font-medium">{syncNotice}</span>
+              </div>
+              <button
+                onClick={() => setSyncNotice(null)}
+                className="text-amber-600 hover:text-amber-900 font-bold px-2 py-1 rounded-lg transition cursor-pointer"
+                title="Fechar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Banner de Aviso de Acesso Restrito (Rigoroso RBAC) */}
           {accessDeniedNotice && (
             <div className="mb-5 p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-center justify-between gap-3">
@@ -3027,6 +3799,7 @@ export default function App() {
               institutions={institutions}
               onAddInstitution={handleAddInstitution}
               onUpdateInstitution={handleUpdateInstitution}
+              onDeleteInstitution={handleDeleteInstitution}
               onUpdateStatus={handleUpdateInstitutionStatus}
               onSelectToManage={handleSelectToManage}
               initialSearchTerm={
@@ -3049,7 +3822,8 @@ export default function App() {
               schoolUsers={schoolUsers}
               accounts={accounts}
               onAddUser={handleAddSchoolUser}
-              onUpdateUser={handleUpdateSchoolUser}
+              onUpdateUser={handleUpdateSuperUser}
+              onDeleteUser={handleDeleteSuperUser}
               onResetPassword={handleResetUserPassword}
               onOpenInstitutionConfig={(institutionId) => {
                 handleDeepNavigate({
@@ -3111,7 +3885,8 @@ export default function App() {
 
           {(isSuperAdminRole || isSchoolAdminRole) && currentTab === 'super_supabase_sql' && (
             <SupabaseSqlViewer
-              onDataReset={handleDataReset}
+              bundle={buildCurrentBundle()}
+              onDataReset={handleSeedDemoData}
               onDataRestored={handleDataRestored}
             />
           )}
@@ -3142,6 +3917,54 @@ export default function App() {
                 navigationKey={navDeepLink?.key}
               />
             )}
+
+          {/* ESTADO DE CARREGAMENTO OU RECUPERAÇÃO DA ESCOLA DO UTILIZADOR */}
+          {!currentInstitution && !isSuperAdminRole && !isMunicipalDirectorRole && (
+            <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm p-8 max-w-lg mx-auto my-8 text-center space-y-4">
+              {isLoadingCloudData ? (
+                <>
+                  <div className="w-10 h-10 rounded-full border-3 border-emerald-600 border-t-transparent animate-spin mx-auto" />
+                  <h2 className="text-base font-bold text-slate-900">
+                    A carregar painel da escola...
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    A sincronizar dados da instituição e indicadores directamente do Supabase.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Dados da escola ainda não carregados
+                  </h2>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Não foi possível localizar a instituição escolar associada à sua conta (
+                    {currentUser.institutionName || currentUser.institutionId || currentUser.email}).
+                    Verifique se o Super Administrador concluiu a sincronização da escola no Supabase.
+                  </p>
+                  <div className="flex items-center justify-center gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handlePullFromCloud().catch((err: any) =>
+                          showSyncErrorNotice(err?.message || 'Falha ao carregar dados da escola.')
+                        );
+                      }}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer"
+                    >
+                      Tentar Carregar Novamente
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                    >
+                      Terminar Sessão
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* INSTITUTIONAL VIEWS (Bloqueadas para Super Administrador e Director Municipal) */}
           {currentInstitution && !isSuperAdminRole && !isMunicipalDirectorRole && (
@@ -3284,6 +4107,16 @@ export default function App() {
                     navDeepLink?.tab === 'classes' ? navDeepLink.openRosterClassId : undefined
                   }
                   navigationKey={navDeepLink?.tab === 'classes' ? navDeepLink.key : undefined}
+                />
+              )}
+
+              {isSchoolAdminRole && currentTab === 'class_lists' && (
+                <ClassListsSheet
+                  currentInstitution={currentInstitution}
+                  classes={classes}
+                  students={students}
+                  teachers={teachers}
+                  onNavigateTab={handleSelectTab}
                 />
               )}
 
@@ -3608,13 +4441,15 @@ export default function App() {
         onClose={() => setIsPWAInstallModalOpen(false)}
       />
 
-      {/* Modal de Gestão da Memória Localhost */}
+      {/* Modal de Backup JSON & Estado na Nuvem Supabase */}
       <LocalhostMemoryModal
         isOpen={isMemoryModalOpen}
         onClose={() => setIsMemoryModalOpen(false)}
-        onDataReset={handleDataReset}
+        bundle={buildCurrentBundle()}
+        onPullFromCloud={handlePullFromCloud}
         onDataRestored={handleDataRestored}
-        onForceSave={handleForceSaveAll}
+        onSeedDemoData={handleSeedDemoData}
+        onForceSyncCloud={handleForceSyncCloud}
       />
     </div>
   );

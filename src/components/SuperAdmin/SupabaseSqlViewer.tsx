@@ -1,8 +1,8 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * NEUROEDUCA - Centro de Gestão de Dados: Armazenamento Local & Supabase
- * Gerencia persistência local no navegador, backups e sincronização bidireccional na nuvem
+ * NEUROEDUCA - Centro de Gestão de Dados: Nuvem Supabase PostgreSQL & Backup JSON
+ * Sincronização em tempo real com Supabase, esquema SQL completo e cópias de segurança
  */
 
 import React, { useState, useEffect } from 'react';
@@ -26,7 +26,14 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
-import { storageService, StorageStats, StorageDataBundle } from '../../services/storageService';
+import {
+  computeBundleStats,
+  createDemoSeedBundle,
+  exportBackupJson,
+  generateSupabaseSqlInserts,
+  parseBackupJson,
+  StorageDataBundle
+} from '../../services/storageService';
 import {
   fetchServerSupabaseStatus,
   getSupabaseConfig,
@@ -46,18 +53,19 @@ import { NEUROEDUCA_SUPABASE_SYNC_SQL } from '../../lib/supabaseSchemaSql';
 import { NEUROEDUCA_ENTITY_TABLES } from '../../lib/supabaseSyncCore';
 
 interface SupabaseSqlViewerProps {
-  onDataReset?: () => void;
-  onDataRestored?: (bundle: StorageDataBundle) => void;
+  bundle: StorageDataBundle;
+  onDataReset?: () => Promise<void> | void;
+  onDataRestored?: (bundle: StorageDataBundle) => Promise<void> | void;
 }
 
 export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
+  bundle,
   onDataReset,
   onDataRestored
 }) => {
   const [activeTab, setActiveTab] = useState<'storage' | 'supabase_sync' | 'ddl_schema' | 'sql_inserts'>('supabase_sync');
 
-  // Estado das Estatísticas de Armazenamento Local
-  const [stats, setStats] = useState<StorageStats>(() => storageService.getStorageStats());
+  const stats = computeBundleStats(bundle);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedInserts, setCopiedInserts] = useState(false);
 
@@ -83,19 +91,14 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
-  const refreshStats = () => {
-    setStats(storageService.getStorageStats());
-  };
-
   useEffect(() => {
-    refreshStats();
     fetchServerSupabaseStatus().then((status) => {
       setServerStatus(status);
       setSupabaseConfig(getSupabaseConfig());
     });
   }, []);
 
-  const generatedSqlInserts = storageService.generateSupabaseSqlInserts();
+  const generatedSqlInserts = generateSupabaseSqlInserts(bundle);
 
   const hasAnyCredentials = Boolean(
     (supabaseConfig.url && supabaseConfig.anonKey) || serverStatus.serverConfigured
@@ -202,8 +205,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
       await saveServerSupabaseConfig(normalizedUrl, supabaseConfig.anonKey, true);
     }
 
-    const currentBundle = storageService.initializeStorage();
-    const result = await syncLocalDataToSupabase(currentBundle);
+    const result = await syncLocalDataToSupabase(bundle, { pruneMissing: true });
     setIsSyncingPush(false);
     setPushResult(result);
     setSupabaseConfig(getSupabaseConfig());
@@ -232,65 +234,65 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
     setSupabaseConfig(getSupabaseConfig());
 
     if (result.success && result.bundle) {
-      const currentLocal = storageService.initializeStorage();
       const mergedBundle: StorageDataBundle = {
-        ...currentLocal,
-        institutions:
-          Array.isArray(result.bundle.institutions) && result.bundle.institutions.length > 0
-            ? result.bundle.institutions
-            : currentLocal.institutions,
+        ...bundle,
+        institutions: Array.isArray(result.bundle.institutions)
+          ? result.bundle.institutions
+          : bundle.institutions,
         classes: Array.isArray(result.bundle.classes)
           ? result.bundle.classes
-          : currentLocal.classes,
+          : bundle.classes,
         subjects: Array.isArray(result.bundle.subjects)
           ? result.bundle.subjects
-          : currentLocal.subjects,
+          : bundle.subjects,
         students: Array.isArray(result.bundle.students)
           ? result.bundle.students
-          : currentLocal.students,
+          : bundle.students,
         teachers: Array.isArray(result.bundle.teachers)
           ? result.bundle.teachers
-          : currentLocal.teachers,
+          : bundle.teachers,
         grades: Array.isArray(result.bundle.grades)
           ? result.bundle.grades
-          : currentLocal.grades,
+          : bundle.grades,
         invoices: Array.isArray(result.bundle.invoices)
           ? result.bundle.invoices
-          : currentLocal.invoices,
+          : bundle.invoices,
         attendance: Array.isArray(result.bundle.attendance)
           ? result.bundle.attendance
-          : currentLocal.attendance,
+          : bundle.attendance,
         digitalArchive: Array.isArray(result.bundle.digitalArchive)
           ? result.bundle.digitalArchive
-          : currentLocal.digitalArchive,
+          : bundle.digitalArchive,
         financialNotifications: Array.isArray(result.bundle.financialNotifications)
           ? result.bundle.financialNotifications
-          : currentLocal.financialNotifications,
+          : bundle.financialNotifications,
         announcements: Array.isArray(result.bundle.announcements)
           ? result.bundle.announcements
-          : currentLocal.announcements,
-        schoolUsers:
-          Array.isArray(result.bundle.schoolUsers) && result.bundle.schoolUsers.length > 0
-            ? result.bundle.schoolUsers
-            : currentLocal.schoolUsers,
-        accounts:
-          Array.isArray(result.bundle.accounts) && result.bundle.accounts.length > 0
-            ? result.bundle.accounts
-            : currentLocal.accounts,
+          : bundle.announcements,
+        schoolUsers: Array.isArray(result.bundle.schoolUsers)
+          ? result.bundle.schoolUsers
+          : bundle.schoolUsers,
+        accounts: Array.isArray(result.bundle.accounts)
+          ? result.bundle.accounts
+          : bundle.accounts,
         subscriptionPlans:
           Array.isArray(result.bundle.subscriptionPlans) &&
           result.bundle.subscriptionPlans.length > 0
             ? result.bundle.subscriptionPlans
-            : currentLocal.subscriptionPlans,
+            : bundle.subscriptionPlans,
         auditLogs: Array.isArray(result.bundle.auditLogs)
           ? result.bundle.auditLogs
-          : currentLocal.auditLogs
+          : bundle.auditLogs,
+        psychopedagogicalProtocols: Array.isArray(result.bundle.psychopedagogicalProtocols)
+          ? result.bundle.psychopedagogicalProtocols
+          : bundle.psychopedagogicalProtocols,
+        psychopedagogicalCases: Array.isArray(result.bundle.psychopedagogicalCases)
+          ? result.bundle.psychopedagogicalCases
+          : bundle.psychopedagogicalCases
       };
 
-      storageService.saveAll(mergedBundle);
-      refreshStats();
       if (onDataRestored) {
-        onDataRestored(mergedBundle);
+        await onDataRestored(mergedBundle);
       }
       setActionNotice(
         `Sincronização concluída: ${result.pulledCount} registos carregados do Supabase para a aplicação!`
@@ -306,7 +308,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
 
   // Descarregar Backup JSON
   const handleDownloadBackup = () => {
-    const json = storageService.exportBackupJson();
+    const json = exportBackupJson(bundle);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -318,23 +320,21 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
     setTimeout(() => setActionNotice(null), 3000);
   };
 
-  // Importar Backup JSON
+  // Importar Backup JSON e sincronizar directamente no Supabase
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setActionError(null);
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const content = event.target?.result as string;
-      const success = storageService.importBackupJson(content);
-      if (success) {
-        refreshStats();
-        setActionNotice('Dados restaurados com sucesso a partir do ficheiro de backup!');
-        const updatedBundle = storageService.initializeStorage();
+      const parsed = parseBackupJson(content);
+      if (parsed) {
         if (onDataRestored) {
-          onDataRestored(updatedBundle);
+          await onDataRestored(parsed);
         }
+        setActionNotice('Dados restaurados e sincronizados no Supabase com sucesso!');
       } else {
         setActionError('Erro ao importar backup: formato de ficheiro JSON inválido.');
       }
@@ -342,22 +342,22 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
     reader.readAsText(file);
   };
 
-  // Restaurar dados padrão de demonstração
-  const handleConfirmResetToDefaults = () => {
-    storageService.resetToDefaults();
-    refreshStats();
+  // Restaurar dados padrão de demonstração na nuvem Supabase
+  const handleConfirmResetToDefaults = async () => {
     setConfirmReset(false);
-    setActionNotice('Dados de demonstração restaurados com sucesso!');
     if (onDataReset) {
-      onDataReset();
+      await onDataReset();
+    } else if (onDataRestored) {
+      await onDataRestored(createDemoSeedBundle());
     }
+    setActionNotice('Dados de demonstração sincronizados com o Supabase com sucesso!');
     setTimeout(() => setActionNotice(null), 4000);
   };
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(NEUROEDUCA_SUPABASE_SYNC_SQL);
     setCopiedSql(true);
-    setActionNotice('Script SQL completo (16 tabelas + RLS) copiado para a área de transferência!');
+    setActionNotice('Script SQL completo (18 tabelas + RLS + RPCs) copiado para a área de transferência!');
     setTimeout(() => {
       setCopiedSql(false);
       setActionNotice(null);
@@ -376,10 +376,10 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-[#dce7df]">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-[#064e26] tracking-tight flex items-center space-x-2">
-            <span>Integração Supabase PostgreSQL &amp; Armazenamento</span>
+            <span>Integração Supabase PostgreSQL &amp; Nuvem</span>
           </h1>
           <p className="text-xs text-[#4b6755] mt-0.5">
-            Sincronização bidireccional com a nuvem Supabase (15 módulos + auditoria), persistência local e cópias de segurança
+            Sincronização 100% em tempo real com Supabase ({NEUROEDUCA_ENTITY_TABLES.length} módulos + sessões) e cópias de segurança JSON
           </p>
         </div>
 
@@ -391,8 +391,8 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
             </span>
           )}
           <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#eaf6ee] text-[#055827] border border-[#cde6d5] shadow-2xs">
-            <HardDrive className="w-3.5 h-3.5 text-[#067836]" />
-            <span>Armazenamento Local Activo</span>
+            <Cloud className="w-3.5 h-3.5 text-[#067836]" />
+            <span>Modo 100% Supabase</span>
           </span>
         </div>
       </div>
@@ -420,7 +420,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
           className="bg-white rounded-2xl border border-[#dce7df] p-4 shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex items-center justify-between gap-3 cursor-pointer hover:border-[#16a34a] transition"
         >
           <div>
-            <p className="text-xs font-medium text-[#4b6755]">Armazenamento Local</p>
+            <p className="text-xs font-medium text-[#4b6755]">Estado em Sessão</p>
             <div className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#064e26] tabular-nums mt-1">
               {stats.approxSizeKb} <span className="text-sm font-normal text-[#4b6755]">KB</span>
             </div>
@@ -444,7 +444,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
               {supabaseConfig.isConnected || serverStatus.serverConfigured ? 'CONECTADO' : 'CONFIGURAR'}
             </div>
             <p className="text-[11px] text-[#055827] font-medium mt-1 truncate">
-              {supabaseConfig.autoSync ? 'Auto-Sync Activo' : 'Sincronização Manual'}
+              {supabaseConfig.autoSync ? 'Sincronização Imediata' : 'Sincronização Manual'}
             </p>
           </div>
           <div className="w-11 h-11 rounded-full bg-[#1d8cf8] text-white flex items-center justify-center shrink-0 shadow-sm">
@@ -452,7 +452,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
           </div>
         </div>
 
-        {/* Caixa 3: 16 Tabelas SQL */}
+        {/* Caixa 3: 18 Tabelas SQL */}
         <div
           onClick={() => setActiveTab('ddl_schema')}
           className="bg-white rounded-2xl border border-[#dce7df] p-4 shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex items-center justify-between gap-3 cursor-pointer hover:border-[#16a34a] transition"
@@ -460,7 +460,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
           <div>
             <p className="text-xs font-medium text-[#4b6755]">Tabelas de Sincronização</p>
             <div className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#064e26] tabular-nums mt-1">
-              {connectionResult ? `${connectionResult.tablesReady}/15` : '16'}
+              {connectionResult ? `${connectionResult.tablesReady}/${NEUROEDUCA_ENTITY_TABLES.length}` : '18'}
             </div>
             <p className="text-[11px] text-[#4b6755] font-medium mt-1">Ver Script SQL DDL</p>
           </div>
@@ -509,7 +509,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
             }`}
           >
             <Terminal className="w-4 h-4" />
-            <span>2. Script SQL de Criação (16 Tabelas)</span>
+            <span>2. Script SQL de Criação (18 Tabelas)</span>
           </button>
 
           <button
@@ -521,7 +521,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
             }`}
           >
             <HardDrive className="w-4 h-4" />
-            <span>3. Gestão do Armazenamento Local</span>
+            <span>3. Backup JSON &amp; Estado na Nuvem</span>
           </button>
 
           <button
@@ -770,7 +770,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
                           className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer inline-flex items-center space-x-1"
                         >
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copiar Script SQL (16 Tabelas)</span>
+                          <span>Copiar Script SQL (18 Tabelas)</span>
                         </button>
                         <button
                           type="button"
@@ -902,13 +902,13 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
                   Passos para concluir a integração no seu projecto Supabase:
                 </p>
                 <p>
-                  1. Copie o script completo na aba <strong>2. Script SQL de Criação (16 Tabelas)</strong> e execute-o no <strong>SQL Editor</strong> do seu painel Supabase.
+                  1. Copie o script completo na aba <strong>2. Script SQL de Criação (18 Tabelas)</strong> e execute-o no <strong>SQL Editor</strong> do seu painel Supabase.
                 </p>
                 <p>
                   2. Cole o <strong>URL</strong> e a <strong>Chave Pública</strong> acima (ou defina <code>SUPABASE_URL</code> e <code>SUPABASE_ANON_KEY</code> em Settings &gt; Secrets) e clique em <strong>Testar Conexão &amp; Tabelas</strong>.
                 </p>
                 <p>
-                  3. Clique em <strong>Enviar Dados para Supabase (Push)</strong> para gravar todas as escolas, turmas, alunos, notas, facturas e comunicados na nuvem, e active o <strong>Auto-Sync</strong>.
+                  3. Clique em <strong>Enviar Dados para Supabase (Push)</strong> para gravar ou reconciliar todas as escolas, turmas, alunos, notas, facturas, psicopedagogia e comunicados directamente na nuvem.
                 </p>
               </div>
             </div>
@@ -917,7 +917,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
       )}
 
       {/* =========================================================
-          ABA 2: SCRIPT SQL DE CRIAÇÃO COMPLETO (16 TABELAS)
+          ABA 2: SCRIPT SQL DE CRIAÇÃO COMPLETO (18 TABELAS)
           ========================================================= */}
       {activeTab === 'ddl_schema' && (
         <div className="space-y-4">
@@ -925,7 +925,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
             <div>
               <h2 className="text-sm font-extrabold text-[#064e26] uppercase flex items-center space-x-2">
                 <Terminal className="w-4 h-4 text-[#067836]" />
-                <span>Script SQL Oficial de Sincronização (16 Tabelas + RLS)</span>
+                <span>Script SQL Oficial de Sincronização (18 Tabelas + RLS + RPCs)</span>
               </h2>
               <p className="text-xs text-[#4b6755] mt-0.5">
                 Copie e execute este script no <strong>SQL Editor</strong> do Supabase para activar todas as {NEUROEDUCA_ENTITY_TABLES.length} colecções da plataforma.
@@ -964,7 +964,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
       )}
 
       {/* =========================================================
-          ABA 3: GESTÃO DO ARMAZENAMENTO LOCAL
+          ABA 3: BACKUP JSON & ESTADO NA NUVEM
           ========================================================= */}
       {activeTab === 'storage' && (
         <div className="space-y-5">
@@ -973,10 +973,10 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
               <div>
                 <h2 className="text-sm sm:text-base font-extrabold uppercase flex items-center space-x-2">
                   <HardDrive className="w-4 h-4" />
-                  <span>Estado da Base de Dados Local (LocalStorage)</span>
+                  <span>Estado na Nuvem Supabase &amp; Backup JSON</span>
                 </h2>
                 <p className="text-xs text-white/85 mt-0.5">
-                  Os dados operam em tempo real no seu dispositivo, com cópia de segurança JSON e sincronização Supabase.
+                  Todos os registos são gravados e eliminados directamente no Supabase PostgreSQL, sem armazenamento local.
                 </p>
               </div>
 
@@ -1091,13 +1091,13 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
               <div className="p-4 bg-[#eaf6ee] border border-[#cde6d5] rounded-xl text-xs text-[#064e26] space-y-2">
                 <div className="flex items-center space-x-2 font-bold text-[#055827]">
                   <Sparkles className="w-4 h-4 text-[#067836]" />
-                  <span>Arquitectura Híbrida (Offline-First + Nuvem Supabase):</span>
+                  <span>Arquitectura 100% Nuvem Supabase PostgreSQL:</span>
                 </div>
                 <p className="leading-relaxed text-[#064e26]/90">
-                  1. <strong>Operação Instantânea:</strong> Todas as operações gravam em <code>LocalStorage</code> e no servidor Express local (<code>.neuroeduca_store.json</code>).
+                  1. <strong>Sincronização Imediata (Sem Armazenamento Local):</strong> Todas as inserções, actualizações e eliminações no painel são sincronizadas directamente nas tabelas do Supabase.
                 </p>
                 <p className="leading-relaxed text-[#064e26]/90">
-                  2. <strong>Sincronização Bidireccional Supabase:</strong> Utilize Push, Pull ou Auto-Sync na Aba 1 para manter todas as 15 colecções sincronizadas na nuvem PostgreSQL.
+                  2. <strong>Reconciliação Completa:</strong> Utilize Push (com limpeza de registos removidos) ou Pull na Aba 1 para auditar os {NEUROEDUCA_ENTITY_TABLES.length} módulos na nuvem.
                 </p>
               </div>
             </div>
@@ -1114,7 +1114,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
             <div>
               <h2 className="text-sm font-extrabold text-[#064e26] uppercase flex items-center space-x-2">
                 <FileCode className="w-4 h-4 text-[#067836]" />
-                <span>Comandos SQL INSERT Gerados a partir do LocalStorage</span>
+                <span>Comandos SQL INSERT Gerados a partir da Sessão Supabase</span>
               </h2>
               <p className="text-xs text-[#4b6755] mt-0.5">
                 Exportação opcional em SQL puro para carga manual no PostgreSQL.
@@ -1142,7 +1142,7 @@ export const SupabaseSqlViewer: React.FC<SupabaseSqlViewerProps> = ({
                 </div>
                 <span className="font-mono text-slate-400 ml-2">Dados Actuais &gt; SQL INSERT</span>
               </div>
-              <span className="text-amber-400 font-mono">Gerado a partir do LocalStorage</span>
+              <span className="text-amber-400 font-mono">Gerado a partir dos Dados em Nuvem</span>
             </div>
 
             <pre className="p-4 text-xs font-mono text-amber-200/90 overflow-x-auto leading-relaxed max-h-[500px]">

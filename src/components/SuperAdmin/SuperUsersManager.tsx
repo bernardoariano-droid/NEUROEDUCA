@@ -19,7 +19,10 @@ import {
   AlertCircle,
   Mail,
   Sliders,
-  MapPin
+  MapPin,
+  Edit3,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import { Institution, SchoolUser, StoredCredential, UserRole } from '../../types';
 
@@ -28,7 +31,8 @@ interface SuperUsersManagerProps {
   schoolUsers: SchoolUser[];
   accounts: StoredCredential[];
   onAddUser: (user: SchoolUser, password?: string) => void;
-  onUpdateUser: (user: SchoolUser) => void;
+  onUpdateUser: (user: SchoolUser, previousEmail?: string) => void;
+  onDeleteUser?: (user: SchoolUser) => void;
   onResetPassword: (user: SchoolUser, newPassword: string) => void;
   onOpenInstitutionConfig?: (institutionId: string) => void;
   initialSearchTerm?: string;
@@ -41,6 +45,7 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
   accounts,
   onAddUser,
   onUpdateUser,
+  onDeleteUser,
   onResetPassword,
   onOpenInstitutionConfig,
   initialSearchTerm = '',
@@ -52,12 +57,14 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
   const [statusFilter, setStatusFilter] = useState<'todos' | 'activo' | 'inactivo'>('todos');
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<(SchoolUser & { originalEmail?: string }) | null>(null);
+  const [userToDelete, setUserToDelete] = useState<(SchoolUser & { institutionName?: string }) | null>(null);
   const [passwordModalUser, setPasswordModalUser] = useState<SchoolUser | null>(null);
   const [newPasswordInput, setNewPasswordInput] = useState('123456');
   const [notice, setNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Form states para novo gestor escolar / Director Municipal
+  // Form states para novo gestor escolar / Director Municipal ou edição
   const [formInstId, setFormInstId] = useState(institutions[0]?.id || '');
   const [formMunicipality, setFormMunicipality] = useState(
     institutions[0]?.municipality || 'Kilamba Kiaxi'
@@ -69,6 +76,7 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
   const [formPhone, setFormPhone] = useState('+244 923 000 000');
   const [formRole, setFormRole] = useState<SchoolUser['role']>('director_geral');
   const [formPassword, setFormPassword] = useState('123');
+  const [formStatus, setFormStatus] = useState<'activo' | 'inactivo'>('activo');
 
   const availableMunicipalities = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -147,8 +155,9 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
       }
     });
 
-    // Garantir que administradores principais das escolas estejam visíveis
+    // Garantir que administradores principais das escolas estejam visíveis (excepto se explicitamente removidos)
     institutions.forEach((inst) => {
+      if (inst.adminEmail === '') return;
       const email = (inst.adminEmail || inst.email || '').toLowerCase();
       if (email && !map.has(email)) {
         map.set(email, {
@@ -237,7 +246,60 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
     setTimeout(() => setNotice(null), 4500);
   };
 
-  const handleCreateUser = (e: React.FormEvent) => {
+  const openCreateModal = () => {
+    setFormError(null);
+    setEditingUser(null);
+    setFormRole('director_geral');
+    setFormInstId(institutions[0]?.id || '');
+    setFormMunicipality(institutions[0]?.municipality || 'Kilamba Kiaxi');
+    setFormCustomMunicipality('');
+    setFormProvince(institutions[0]?.province || 'Luanda');
+    setFormFullName('');
+    setFormEmail('');
+    setFormPhone('+244 923 000 000');
+    setFormPassword('123');
+    setFormStatus('activo');
+    setIsAddModalOpen(true);
+  };
+
+  const openEditModal = (user: SchoolUser) => {
+    setFormError(null);
+    setEditingUser({ ...user, originalEmail: user.email });
+    setFormRole(user.role);
+    setFormInstId(
+      user.institutionId && user.institutionId !== 'municipal'
+        ? user.institutionId
+        : institutions[0]?.id || ''
+    );
+
+    const userMun = (user.municipality || '').trim();
+    const matchesPreset = availableMunicipalities.some(
+      (m) => m.municipality.toLowerCase() === userMun.toLowerCase()
+    );
+    if (user.role === 'director_municipal') {
+      if (userMun && !matchesPreset) {
+        setFormMunicipality('__custom__');
+        setFormCustomMunicipality(userMun);
+      } else {
+        setFormMunicipality(userMun || availableMunicipalities[0]?.municipality || 'Kilamba Kiaxi');
+        setFormCustomMunicipality('');
+      }
+      setFormProvince(user.province || 'Luanda');
+    } else {
+      setFormMunicipality(institutions[0]?.municipality || 'Kilamba Kiaxi');
+      setFormCustomMunicipality('');
+      setFormProvince(institutions[0]?.province || 'Luanda');
+    }
+
+    setFormFullName(user.fullName);
+    setFormEmail(user.email);
+    setFormPhone(user.phone || '+244 923 000 000');
+    setFormPassword('');
+    setFormStatus(user.status || 'activo');
+    setIsAddModalOpen(true);
+  };
+
+  const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     const isMunDirector = formRole === 'director_municipal';
@@ -259,11 +321,42 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
       return;
     }
 
+    const cleanEmail = formEmail.trim().toLowerCase();
+    const originalEmailLower = editingUser?.originalEmail?.trim().toLowerCase();
     const exists = allManagedUsers.some(
-      (u) => u.email.toLowerCase() === formEmail.trim().toLowerCase()
+      (u) =>
+        u.email.toLowerCase() === cleanEmail &&
+        (!editingUser || u.email.toLowerCase() !== originalEmailLower)
     );
     if (exists) {
       setFormError('Já existe uma conta registada com este e-mail.');
+      return;
+    }
+
+    if (editingUser) {
+      const updatedUser: SchoolUser = {
+        ...editingUser,
+        institutionId: isMunDirector ? 'municipal' : formInstId,
+        municipality: isMunDirector ? resolvedMunicipality : undefined,
+        province: isMunDirector ? formProvince.trim() || 'Luanda' : undefined,
+        fullName: formFullName.trim(),
+        email: cleanEmail,
+        phone: formPhone.trim() || '+244 923 000 000',
+        role: formRole,
+        status: formStatus,
+        departmentOrClass: isMunDirector
+          ? `Direcção Municipal da Educação de ${resolvedMunicipality}`
+          : getRoleLabel(formRole)
+      };
+
+      onUpdateUser(updatedUser, editingUser.originalEmail);
+      if (formPassword.trim()) {
+        onResetPassword(updatedUser, formPassword.trim());
+      }
+      setIsAddModalOpen(false);
+      setEditingUser(null);
+      setNotice(`Dados de ${updatedUser.fullName} actualizados com sucesso!`);
+      setTimeout(() => setNotice(null), 5000);
       return;
     }
 
@@ -273,10 +366,10 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
       municipality: isMunDirector ? resolvedMunicipality : undefined,
       province: isMunDirector ? formProvince.trim() || 'Luanda' : undefined,
       fullName: formFullName.trim(),
-      email: formEmail.trim(),
+      email: cleanEmail,
       phone: formPhone.trim() || '+244 923 000 000',
       role: formRole,
-      status: 'activo',
+      status: formStatus,
       departmentOrClass: isMunDirector
         ? `Direcção Municipal da Educação de ${resolvedMunicipality}`
         : getRoleLabel(formRole),
@@ -311,10 +404,7 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
         </div>
 
         <button
-          onClick={() => {
-            setFormError(null);
-            setIsAddModalOpen(true);
-          }}
+          onClick={openCreateModal}
           className="inline-flex items-center space-x-1.5 bg-gradient-to-r from-[#067836] to-[#149a45] hover:from-[#05652d] hover:to-[#11863b] text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-sm transition cursor-pointer self-start sm:self-auto min-h-[40px]"
         >
           <UserPlus className="w-4 h-4" />
@@ -488,6 +578,14 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                     </span>
                   </td>
                   <td className="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
+                    <button
+                      onClick={() => openEditModal(u)}
+                      className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-[#eaf6ee] hover:bg-[#d7efe0] border border-[#cde6d5] text-[#055827] font-bold transition cursor-pointer"
+                      title="Editar dados, perfil e escola do administrador/utilizador"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-[#067836]" />
+                      <span>Editar</span>
+                    </button>
                     {onOpenInstitutionConfig && u.role !== 'director_municipal' && (
                       <button
                         onClick={() => onOpenInstitutionConfig(u.institutionId)}
@@ -503,7 +601,7 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                         setPasswordModalUser(u);
                         setNewPasswordInput('123456');
                       }}
-                      className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-[#eaf6ee] hover:bg-[#d7efe0] border border-[#cde6d5] text-[#055827] font-bold transition cursor-pointer"
+                      className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-[#f7fbf8] hover:bg-[#eaf6ee] border border-[#cde6d5] text-[#055827] font-bold transition cursor-pointer"
                       title="Redefinir senha"
                     >
                       <Key className="w-3.5 h-3.5" />
@@ -513,13 +611,23 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                       onClick={() => handleToggleStatus(u)}
                       className={`inline-flex items-center p-1.5 rounded-lg transition cursor-pointer ${
                         u.status === 'activo'
-                          ? 'text-red-600 hover:bg-red-50'
+                          ? 'text-amber-600 hover:bg-amber-50'
                           : 'text-[#067836] hover:bg-[#eaf6ee]'
                       }`}
                       title={u.status === 'activo' ? 'Suspender acesso' : 'Reactivar acesso'}
                     >
                       <Power className="w-4 h-4" />
                     </button>
+                    {onDeleteUser && (
+                      <button
+                        onClick={() => setUserToDelete(u)}
+                        className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-bold transition cursor-pointer"
+                        title="Apagar administrador / utilizador"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Apagar</span>
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -535,23 +643,28 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
         </div>
       </div>
 
-      {/* Modal: Cadastrar Gestor / Utilizador */}
+      {/* Modal: Cadastrar / Editar Gestor / Utilizador */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-[#022c16]/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-[#dce7df] shadow-2xl w-full max-w-lg overflow-hidden">
-            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white px-5 py-3.5 flex items-center justify-between">
+          <div className="bg-white rounded-2xl border border-[#dce7df] shadow-2xl w-full max-w-lg overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white px-5 py-3.5 flex items-center justify-between shrink-0">
               <h3 className="text-sm font-bold uppercase tracking-wide">
-                Cadastrar Administrador / Utilizador
+                {editingUser
+                  ? 'Editar Administrador / Utilizador'
+                  : 'Cadastrar Administrador / Utilizador'}
               </h3>
               <button
-                onClick={() => setIsAddModalOpen(false)}
+                onClick={() => {
+                  setIsAddModalOpen(false);
+                  setEditingUser(null);
+                }}
                 className="text-white/80 hover:text-white hover:bg-white/15 rounded-lg p-1 cursor-pointer transition"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateUser} className="p-5 space-y-3.5 text-xs">
+            <form onSubmit={handleSaveUser} className="p-5 space-y-3.5 text-xs overflow-y-auto">
               {formError && (
                 <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-red-700 font-semibold flex items-center space-x-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -675,31 +788,52 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-[#064e26] block mb-1">Senha Inicial *</label>
+                  <label className="font-bold text-[#064e26] block mb-1">
+                    {editingUser ? 'Nova Senha (opcional)' : 'Senha Inicial *'}
+                  </label>
                   <input
                     type="text"
-                    required
+                    required={!editingUser}
                     value={formPassword}
                     onChange={(e) => setFormPassword(e.target.value)}
+                    placeholder={editingUser ? 'Deixe vazio para manter' : '123'}
                     className="w-full bg-[#f7fbf8] text-[#064e26] font-mono rounded-xl px-3 py-2 border border-[#cde6d5] focus:border-[#067836] focus:ring-2 focus:ring-[#16a34a]/15 focus:outline-none"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="font-bold text-[#064e26] block mb-1">Telefone</label>
-                <input
-                  type="text"
-                  value={formPhone}
-                  onChange={(e) => setFormPhone(e.target.value)}
-                  className="w-full bg-[#f7fbf8] text-[#064e26] rounded-xl px-3 py-2 border border-[#cde6d5] focus:border-[#067836] focus:ring-2 focus:ring-[#16a34a]/15 focus:outline-none"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-[#064e26] block mb-1">Telefone</label>
+                  <input
+                    type="text"
+                    value={formPhone}
+                    onChange={(e) => setFormPhone(e.target.value)}
+                    className="w-full bg-[#f7fbf8] text-[#064e26] rounded-xl px-3 py-2 border border-[#cde6d5] focus:border-[#067836] focus:ring-2 focus:ring-[#16a34a]/15 focus:outline-none"
+                  />
+                </div>
+                {editingUser && (
+                  <div>
+                    <label className="font-bold text-[#064e26] block mb-1">Estado da Conta</label>
+                    <select
+                      value={formStatus}
+                      onChange={(e) => setFormStatus(e.target.value as 'activo' | 'inactivo')}
+                      className="w-full bg-[#f7fbf8] text-[#064e26] rounded-xl px-3 py-2 border border-[#cde6d5] font-semibold focus:border-[#067836] focus:ring-2 focus:ring-[#16a34a]/15 focus:outline-none"
+                    >
+                      <option value="activo">Activo</option>
+                      <option value="inactivo">Suspenso</option>
+                    </select>
+                  </div>
+                )}
               </div>
 
               <div className="pt-3 border-t border-[#dce7df] flex justify-end space-x-2">
                 <button
                   type="button"
-                  onClick={() => setIsAddModalOpen(false)}
+                  onClick={() => {
+                    setIsAddModalOpen(false);
+                    setEditingUser(null);
+                  }}
                   className="px-4 py-2 rounded-xl bg-[#f7fbf8] border border-[#cde6d5] text-[#064e26] hover:bg-[#eaf6ee] font-bold cursor-pointer transition"
                 >
                   Cancelar
@@ -708,7 +842,7 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                   type="submit"
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#067836] to-[#149a45] hover:from-[#05652d] hover:to-[#11863b] text-white font-bold shadow-sm cursor-pointer transition"
                 >
-                  Guardar Utilizador
+                  {editingUser ? 'Guardar Alterações' : 'Guardar Utilizador'}
                 </button>
               </div>
             </form>
@@ -757,6 +891,70 @@ export const SuperUsersManager: React.FC<SuperUsersManagerProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Modal: Confirmar Eliminação de Utilizador / Administrador */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 bg-[#022c16]/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-red-200 shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="bg-red-600 text-white px-5 py-3.5 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="w-4 h-4" />
+                <h3 className="text-xs font-bold uppercase tracking-wide">
+                  Confirmar Eliminação de Administrador / Utilizador
+                </h3>
+              </div>
+              <button
+                onClick={() => setUserToDelete(null)}
+                className="text-white/80 hover:text-white hover:bg-white/15 rounded-lg p-1 cursor-pointer transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs text-[#064e26]">
+              <p className="leading-relaxed">
+                Tem a certeza que pretende apagar a conta de{' '}
+                <strong className="text-red-700">{userToDelete.fullName}</strong>?
+              </p>
+
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-red-800">
+                <p>
+                  • E-mail: <strong className="font-mono">{userToDelete.email}</strong>
+                </p>
+                <p>
+                  • Perfil: <strong>{getRoleLabel(userToDelete.role)}</strong>
+                </p>
+                <p>
+                  • Vinculação: <strong>{userToDelete.institutionName || 'Rede NEUROEDUCA'}</strong>
+                </p>
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setUserToDelete(null)}
+                  className="px-4 py-2 rounded-xl bg-[#f7fbf8] border border-[#cde6d5] text-[#064e26] hover:bg-[#eaf6ee] font-bold cursor-pointer transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = userToDelete;
+                    setUserToDelete(null);
+                    onDeleteUser?.(target);
+                    setNotice(`Conta de ${target.fullName} (${target.email}) removida com sucesso.`);
+                    setTimeout(() => setNotice(null), 4500);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-sm cursor-pointer transition inline-flex items-center space-x-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Apagar Utilizador</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

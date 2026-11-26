@@ -44,7 +44,6 @@ import {
   DigitalArchiveDocument
 } from '../../types';
 import { ANGOLA_PROVINCES, formatAngolaDate } from '../../utils/currency';
-import { storageService } from '../../services/storageService';
 import { isExamAndRecourseEligible } from '../../utils/evaluationEngine';
 import {
   FunctionalDropdownFilter,
@@ -380,17 +379,6 @@ export const StudentsManager: React.FC<StudentsManagerProps> = ({
     };
 
     onAddStudent(newStudent);
-
-    // Registar credenciais do Aluno para acesso imediato ao Portal na memória Localhost
-    storageService.upsertAccount({
-      email: studentLoginEmail,
-      password: formPortalPassword.trim() || '123',
-      fullName: `${newStudent.fullName} (Estudante)`,
-      role: 'aluno',
-      institutionId: newStudent.institutionId,
-      institutionName: currentInstitution.name,
-      status: 'activo'
-    });
 
     setIsModalOpen(false);
     setEditingStudent(null);

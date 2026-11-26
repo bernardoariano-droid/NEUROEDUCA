@@ -1,8 +1,8 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * NEUROEDUCA - Cliente e Adaptador de Sincronização Supabase
- * Permite integração fluida e bidireccional entre LocalStorage, Express e Supabase PostgreSQL
+ * NEUROEDUCA - Cliente e Adaptador de Sincronização Supabase (100% Nuvem)
+ * Opera exclusivamente com Supabase PostgreSQL e sessão autenticada por cookie HttpOnly/memória.
  */
 
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -18,14 +18,19 @@ import {
   StorageUploadResult,
   STUDENT_DOCS_BUCKET,
   SupabaseHealthResult,
+  SupabaseMutateResult,
+  SupabaseMutationBatch,
   SupabaseSyncPullResult,
   SupabaseSyncPushResult,
+  syncChangesToSupabase,
   uploadArchiveDocumentToStorage
 } from './supabaseSyncCore';
 
 export type {
   StorageUploadResult,
   SupabaseHealthResult,
+  SupabaseMutateResult,
+  SupabaseMutationBatch,
   SupabaseSyncPullResult,
   SupabaseSyncPushResult
 };
@@ -50,10 +55,33 @@ export interface ServerSupabaseStatus {
   publicAnonKey?: string;
 }
 
+export interface CloudLoginResult {
+  authenticated: boolean;
+  inactive?: boolean;
+  cloudUnavailable?: boolean;
+  accessToken?: string;
+  sessionToken?: string;
+  error?: string;
+  account?: {
+    email: string;
+    fullName: string;
+    role: string;
+    institutionId?: string;
+    institutionName?: string;
+    municipality?: string;
+    province?: string;
+    status: 'activo' | 'inactivo';
+  };
+}
+
+export interface SupabaseBootstrapStatus {
+  hasAccounts: boolean;
+  bootstrapRequired: boolean;
+  cloudUnavailable?: boolean;
+}
+
 declare const __PUBLIC_SUPABASE_URL__: string;
 declare const __PUBLIC_SUPABASE_ANON_KEY__: string;
-
-const SUPABASE_CONFIG_KEY = 'neuroeduca_supabase_config';
 
 export function normalizeSupabaseUrlSafe(rawUrl: string): string {
   try {
@@ -66,7 +94,7 @@ export function normalizeSupabaseUrlSafe(rawUrl: string): string {
   }
 }
 
-export function getSupabaseConfig(): SupabaseConfig {
+function getEnvSupabaseDefaults(): { url: string; anonKey: string } {
   const injectedUrl =
     typeof __PUBLIC_SUPABASE_URL__ !== 'undefined' ? __PUBLIC_SUPABASE_URL__ : '';
   const injectedKey =
@@ -77,44 +105,33 @@ export function getSupabaseConfig(): SupabaseConfig {
   const envKey = String(
     (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || injectedKey || ''
   ).trim();
+  return { url: envUrl, anonKey: envKey };
+}
 
-  if (typeof window === 'undefined') {
-    return {
+let runtimeSupabaseConfig: SupabaseConfig | null = null;
+
+export function getSupabaseConfig(): SupabaseConfig {
+  const { url: envUrl, anonKey: envKey } = getEnvSupabaseDefaults();
+
+  if (!runtimeSupabaseConfig) {
+    runtimeSupabaseConfig = {
       url: envUrl,
       anonKey: envKey,
       isConnected: Boolean(envUrl && envKey),
-      autoSync: false,
+      autoSync: Boolean(envUrl && envKey),
       lastSyncAt: null
+    };
+  } else if (envUrl && envKey && (!runtimeSupabaseConfig.url || !runtimeSupabaseConfig.anonKey)) {
+    runtimeSupabaseConfig = {
+      ...runtimeSupabaseConfig,
+      url: envUrl,
+      anonKey: envKey,
+      isConnected: true,
+      autoSync: true
     };
   }
 
-  try {
-    const saved = localStorage.getItem(SUPABASE_CONFIG_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved) as Partial<SupabaseConfig>;
-      const hasEnv = Boolean(envUrl && envKey);
-      const normalizedSavedUrl = normalizeSupabaseUrlSafe(hasEnv ? envUrl : parsed.url || envUrl);
-      const resolvedKey = String(hasEnv ? envKey : parsed.anonKey || envKey || '').trim();
-      return {
-        url: normalizedSavedUrl,
-        anonKey: resolvedKey,
-        isConnected: hasEnv ? true : Boolean(parsed.isConnected && normalizedSavedUrl && resolvedKey),
-        autoSync: hasEnv ? true : Boolean(parsed.autoSync),
-        lastSyncAt: parsed.lastSyncAt || null,
-        syncStatusMessage: parsed.syncStatusMessage
-      };
-    }
-  } catch (e) {
-    console.warn('Erro ao carregar configurações do Supabase:', e);
-  }
-
-  return {
-    url: envUrl,
-    anonKey: envKey,
-    isConnected: Boolean(envUrl && envKey),
-    autoSync: Boolean(envUrl && envKey),
-    lastSyncAt: null
-  };
+  return { ...runtimeSupabaseConfig };
 }
 
 export function saveSupabaseConfig(config: SupabaseConfig): SupabaseConfig {
@@ -123,22 +140,18 @@ export function saveSupabaseConfig(config: SupabaseConfig): SupabaseConfig {
     url: normalizeSupabaseUrlSafe(config.url),
     anonKey: String(config.anonKey || '').trim()
   };
-
-  if (typeof window !== 'undefined') {
-    try {
-      localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(normalized));
-    } catch (e) {
-      console.error('Erro ao guardar configurações do Supabase:', e);
-    }
-  }
-  return normalized;
+  runtimeSupabaseConfig = normalized;
+  cachedClient = null;
+  return { ...normalized };
 }
 
 let cachedClient: SupabaseClient | null = null;
 let lastUsedUrl = '';
 let lastUsedKey = '';
-let lastUsedToken = '';
+let lastUsedAccessToken = '';
+let lastUsedSessionToken = '';
 let inMemoryAccessToken: string | null = null;
+let inMemorySessionToken: string | null = null;
 
 export function setSupabaseAuthSessionToken(token: string | null): void {
   inMemoryAccessToken = token ? String(token).trim() : null;
@@ -149,10 +162,32 @@ export function getSupabaseAuthSessionToken(): string | null {
   return inMemoryAccessToken;
 }
 
+export function setSupabaseSessionToken(token: string | null): void {
+  inMemorySessionToken = token ? String(token).trim() : null;
+  cachedClient = null;
+}
+
+export function getSupabaseSessionToken(): string | null {
+  return inMemorySessionToken;
+}
+
 export function clearSupabaseAuthSession(): void {
   inMemoryAccessToken = null;
-  lastUsedToken = '';
+  inMemorySessionToken = null;
+  lastUsedAccessToken = '';
+  lastUsedSessionToken = '';
   cachedClient = null;
+}
+
+function getAuthFetchHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (inMemoryAccessToken) {
+    headers.Authorization = `Bearer ${inMemoryAccessToken}`;
+  }
+  if (inMemorySessionToken) {
+    headers['x-ne-session'] = inMemorySessionToken;
+  }
+  return headers;
 }
 
 export async function signInSupabaseAuthSession(
@@ -180,7 +215,7 @@ export async function signInSupabaseAuthSession(
       return data.session.access_token;
     }
   } catch {
-    // Sessão Auth opcional quando conta ainda não está em auth.users
+    // Sessão Auth opcional quando a conta usa verificação RPC + token de sessão NEUROEDUCA
   }
   return null;
 }
@@ -191,24 +226,26 @@ export function getSupabaseClient(): SupabaseClient | null {
 
   try {
     const normalizedUrl = normalizeSupabaseUrl(config.url);
-    const currentToken = inMemoryAccessToken || '';
+    const currentAccessToken = inMemoryAccessToken || '';
+    const currentSessionToken = inMemorySessionToken || '';
     if (
       cachedClient &&
       lastUsedUrl === normalizedUrl &&
       lastUsedKey === config.anonKey &&
-      lastUsedToken === currentToken
+      lastUsedAccessToken === currentAccessToken &&
+      lastUsedSessionToken === currentSessionToken
     ) {
       return cachedClient;
     }
 
-    cachedClient = createValidatedSupabaseClient(
-      normalizedUrl,
-      config.anonKey,
-      currentToken || undefined
-    );
+    cachedClient = createValidatedSupabaseClient(normalizedUrl, config.anonKey, {
+      accessToken: currentAccessToken || undefined,
+      sessionToken: currentSessionToken || undefined
+    });
     lastUsedUrl = normalizedUrl;
     lastUsedKey = config.anonKey;
-    lastUsedToken = currentToken;
+    lastUsedAccessToken = currentAccessToken;
+    lastUsedSessionToken = currentSessionToken;
     return cachedClient;
   } catch (err) {
     console.error('Erro ao inicializar cliente Supabase:', err);
@@ -236,7 +273,11 @@ export async function saveServerSupabaseConfig(
   try {
     const res = await fetch('/api/supabase/config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'NEUROEDUCA'
+      },
+      credentials: 'include',
       body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey, autoSync })
     });
     const data = (await res.json()) as {
@@ -257,7 +298,7 @@ export async function saveServerSupabaseConfig(
 
 export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus> {
   try {
-    const res = await fetch('/api/supabase/status');
+    const res = await fetch('/api/supabase/status', { credentials: 'include' });
     if (!res.ok) {
       serverConfiguredCached = false;
       return { serverConfigured: false, urlHost: null, normalizedUrl: '' };
@@ -265,7 +306,6 @@ export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus>
     const data = (await res.json()) as ServerSupabaseStatus;
     serverConfiguredCached = Boolean(data?.serverConfigured);
 
-    // Hidratar automaticamente qualquer navegador que abra o link partilhado
     if (
       typeof window !== 'undefined' &&
       data?.serverConfigured &&
@@ -276,7 +316,10 @@ export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus>
       const needsHydration =
         !current.url ||
         !current.anonKey ||
-        Boolean(data.configuredViaEnv && (current.url !== data.publicUrl || current.anonKey !== data.publicAnonKey));
+        Boolean(
+          data.configuredViaEnv &&
+            (current.url !== data.publicUrl || current.anonKey !== data.publicAnonKey)
+        );
 
       if (needsHydration) {
         saveSupabaseConfig({
@@ -298,8 +341,20 @@ export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus>
   }
 }
 
+function shouldUseServerProxy(): boolean {
+  return typeof window !== 'undefined' && (Boolean(inMemorySessionToken) || serverConfiguredCached);
+}
+
+function getConfigBodyFields(): { url?: string; anonKey?: string } {
+  const cfg = getSupabaseConfig();
+  return {
+    ...(cfg.url ? { url: normalizeSupabaseUrlSafe(cfg.url) } : {}),
+    ...(cfg.anonKey ? { anonKey: cfg.anonKey } : {})
+  };
+}
+
 /**
- * Testa conectividade e verifica estado das 15 tabelas relacionais no Supabase
+ * Testa conectividade e verifica estado das 18 tabelas relacionais no Supabase
  */
 export async function testSupabaseConnection(
   url?: string,
@@ -308,24 +363,45 @@ export async function testSupabaseConnection(
   const cleanUrl = normalizeSupabaseUrlSafe(url || '');
   const cleanKey = String(anonKey || '').trim();
 
-  if (cleanUrl && cleanKey) {
-    const direct = await checkSupabaseTablesHealth(
-      cleanUrl,
-      cleanKey,
-      inMemoryAccessToken || undefined
-    );
-    return direct;
+  if (typeof window !== 'undefined' && (serverConfiguredCached || inMemorySessionToken)) {
+    try {
+      const res = await fetch('/api/supabase/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthFetchHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          ...(cleanUrl ? { url: cleanUrl } : {}),
+          ...(cleanKey ? { anonKey: cleanKey } : {}),
+          ...(!cleanUrl || !cleanKey ? getConfigBodyFields() : {})
+        })
+      });
+      if (res.ok || res.status === 400) {
+        return (await res.json()) as SupabaseHealthResult;
+      }
+    } catch {
+      // Fallback para cliente directo se /api não responder
+    }
   }
 
-  // Fallback para Secrets configuradas no servidor Express
+  if (cleanUrl && cleanKey) {
+    return checkSupabaseTablesHealth(cleanUrl, cleanKey, {
+      accessToken: inMemoryAccessToken || undefined,
+      sessionToken: !inMemoryAccessToken ? inMemorySessionToken || undefined : undefined
+    });
+  }
+
   try {
     const res = await fetch('/api/supabase/test', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+        ...getAuthFetchHeaders()
       },
-      body: JSON.stringify({})
+      credentials: 'include',
+      body: JSON.stringify(getConfigBodyFields())
     });
     return (await res.json()) as SupabaseHealthResult;
   } catch (err: any) {
@@ -334,7 +410,7 @@ export async function testSupabaseConnection(
       message: err?.message || 'Erro ao verificar estado do Supabase no servidor.',
       normalizedUrl: '',
       tablesReady: 0,
-      totalTables: 15,
+      totalTables: 17,
       missingTables: [],
       tableDetails: []
     };
@@ -342,39 +418,128 @@ export async function testSupabaseConnection(
 }
 
 /**
- * Sincroniza dados locais para o Supabase (Push)
+ * Sincronização incremental imediata (Upserts + Deletes explícitos no PostgreSQL)
+ */
+export async function syncChangesToSupabaseClient(
+  batch: SupabaseMutationBatch
+): Promise<SupabaseMutateResult> {
+  const config = getSupabaseConfig();
+  const client = getSupabaseClient();
+  let result: SupabaseMutateResult | null = null;
+
+  if (shouldUseServerProxy() || !client) {
+    try {
+      const res = await fetch('/api/supabase/mutate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'NEUROEDUCA',
+          ...getAuthFetchHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({ ...batch, ...getConfigBodyFields() })
+      });
+      if (res.status !== 404) {
+        result = (await res.json()) as SupabaseMutateResult;
+      }
+    } catch (err: any) {
+      if (!client || inMemorySessionToken) {
+        result = {
+          success: false,
+          syncedCount: 0,
+          deletedCount: 0,
+          errors: [err?.message || 'Erro de rede ao contactar servidor Supabase.'],
+          syncedAt: new Date().toISOString()
+        };
+      }
+    }
+  }
+
+  if (!result && client) {
+    result = await syncChangesToSupabase(client, batch);
+  }
+
+  if (!result) {
+    result = {
+      success: false,
+      syncedCount: 0,
+      deletedCount: 0,
+      errors: ['Cliente Supabase não configurado.'],
+      syncedAt: new Date().toISOString()
+    };
+  }
+
+  if (result.success) {
+    saveSupabaseConfig({
+      ...config,
+      isConnected: true,
+      lastSyncAt: result.syncedAt,
+      syncStatusMessage: `Sincronização em tempo real: ${result.syncedCount} gravado(s), ${result.deletedCount} eliminado(s).`
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Sincroniza um bundle completo com o Supabase (Push + reconciliação opcional de eliminações)
  */
 export async function syncLocalDataToSupabase(
-  bundle: StorageDataBundle
+  bundle: StorageDataBundle,
+  options?: { pruneMissing?: boolean }
 ): Promise<SupabaseSyncPushResult> {
   const config = getSupabaseConfig();
   const client = getSupabaseClient();
+  let result: SupabaseSyncPushResult | null = null;
 
-  let result: SupabaseSyncPushResult;
-
-  if (client) {
-    result = await pushBundleToSupabase(client, bundle);
-  } else {
+  if (shouldUseServerProxy() || !client) {
     try {
       const res = await fetch('/api/supabase/push', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+          'X-Requested-With': 'NEUROEDUCA',
+          ...getAuthFetchHeaders()
         },
-        body: JSON.stringify({ bundle })
+        credentials: 'include',
+        body: JSON.stringify({
+          bundle,
+          pruneMissing: Boolean(options?.pruneMissing),
+          ...getConfigBodyFields()
+        })
       });
-      result = (await res.json()) as SupabaseSyncPushResult;
+      if (res.status !== 404) {
+        result = (await res.json()) as SupabaseSyncPushResult;
+      }
     } catch (err: any) {
-      result = {
-        success: false,
-        syncedCount: 0,
-        tableCounts: {},
-        missingTables: [],
-        errors: [err?.message || 'Cliente Supabase não configurado.'],
-        syncedAt: new Date().toISOString()
-      };
+      if (!client || inMemorySessionToken) {
+        result = {
+          success: false,
+          syncedCount: 0,
+          deletedCount: 0,
+          tableCounts: {},
+          missingTables: [],
+          errors: [err?.message || 'Erro de rede ao contactar servidor Supabase.'],
+          syncedAt: new Date().toISOString()
+        };
+      }
     }
+  }
+
+  if (!result && client) {
+    result = await pushBundleToSupabase(client, bundle, options);
+  }
+
+  if (!result) {
+    result = {
+      success: false,
+      syncedCount: 0,
+      deletedCount: 0,
+      tableCounts: {},
+      missingTables: [],
+      errors: ['Cliente Supabase não configurado.'],
+      syncedAt: new Date().toISOString()
+    };
   }
 
   if (result.syncedCount > 0 || result.success) {
@@ -392,38 +557,56 @@ export async function syncLocalDataToSupabase(
 }
 
 /**
- * Importa dados do Supabase para o Armazenamento Local (Pull)
+ * Carrega todos os dados directamente do Supabase PostgreSQL (Pull)
  */
 export async function pullSupabaseDataToLocal(): Promise<SupabaseSyncPullResult> {
   const config = getSupabaseConfig();
   const client = getSupabaseClient();
+  let result: SupabaseSyncPullResult | null = null;
 
-  let result: SupabaseSyncPullResult;
-
-  if (client) {
-    result = await pullBundleFromSupabase(client);
-  } else {
+  if (shouldUseServerProxy() || !client) {
     try {
       const res = await fetch('/api/supabase/pull', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+          ...getAuthFetchHeaders()
         },
-        body: JSON.stringify({})
+        credentials: 'include',
+        body: JSON.stringify(getConfigBodyFields())
       });
-      result = (await res.json()) as SupabaseSyncPullResult;
+      if (res.status !== 404) {
+        result = (await res.json()) as SupabaseSyncPullResult;
+      }
     } catch (err: any) {
-      result = {
-        success: false,
-        bundle: null,
-        pulledCount: 0,
-        tableCounts: {},
-        missingTables: [],
-        errors: [err?.message || 'Cliente Supabase não configurado.'],
-        pulledAt: new Date().toISOString()
-      };
+      if (!client || inMemorySessionToken) {
+        result = {
+          success: false,
+          bundle: null,
+          pulledCount: 0,
+          tableCounts: {},
+          missingTables: [],
+          errors: [err?.message || 'Erro de rede ao carregar dados do Supabase.'],
+          pulledAt: new Date().toISOString()
+        };
+      }
     }
+  }
+
+  if (!result && client) {
+    result = await pullBundleFromSupabase(client);
+  }
+
+  if (!result) {
+    result = {
+      success: false,
+      bundle: null,
+      pulledCount: 0,
+      tableCounts: {},
+      missingTables: [],
+      errors: ['Cliente Supabase não configurado.'],
+      pulledAt: new Date().toISOString()
+    };
   }
 
   if (result.success) {
@@ -431,59 +614,11 @@ export async function pullSupabaseDataToLocal(): Promise<SupabaseSyncPullResult>
       ...config,
       isConnected: true,
       lastSyncAt: result.cloudUpdatedAt || result.pulledAt,
-      syncStatusMessage: `Importados ${result.pulledCount} registos do Supabase.`
+      syncStatusMessage: `Carregados ${result.pulledCount} registos do Supabase.`
     });
   }
 
   return result;
-}
-
-let autoPushTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingBundle: StorageDataBundle | null = null;
-
-/**
- * Agenda sincronização automática em background quando o Auto-Sync está activo
- */
-export function scheduleAutoSupabasePush(bundle: StorageDataBundle): void {
-  if (typeof window === 'undefined') return;
-  const config = getSupabaseConfig();
-  const hasBrowserCreds = Boolean(config.url && config.anonKey);
-  if (!config.autoSync && !serverConfiguredCached) return;
-  if (config.autoSync === false && !serverConfiguredCached) return;
-  if (!hasBrowserCreds && !serverConfiguredCached) return;
-
-  pendingBundle = bundle;
-  if (autoPushTimer) {
-    clearTimeout(autoPushTimer);
-  }
-
-  autoPushTimer = setTimeout(() => {
-    const toSync = pendingBundle;
-    pendingBundle = null;
-    if (toSync) {
-      syncLocalDataToSupabase(toSync).catch((err) => {
-        console.warn('Sincronização automática Supabase:', err);
-      });
-    }
-  }, 1500);
-}
-
-export interface CloudLoginResult {
-  authenticated: boolean;
-  inactive?: boolean;
-  cloudUnavailable?: boolean;
-  accessToken?: string;
-  error?: string;
-  account?: {
-    email: string;
-    fullName: string;
-    role: string;
-    institutionId?: string;
-    institutionName?: string;
-    municipality?: string;
-    province?: string;
-    status: 'activo' | 'inactivo';
-  };
 }
 
 function isRpcMissingError(err: any): boolean {
@@ -494,8 +629,240 @@ function isRpcMissingError(err: any): boolean {
 }
 
 /**
- * Verifica credenciais via RPC segura (verify_neuroeduca_login) e/ou Supabase Auth (auth.users),
- * evitando leitura anónima directa da tabela neuroeduca_accounts.
+ * Persiste o cookie HttpOnly da sessão autenticada no navegador via servidor
+ */
+export async function persistBrowserSessionCookie(tokens: {
+  sessionToken?: string | null;
+  accessToken?: string | null;
+}): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  if (!tokens.sessionToken && !tokens.accessToken) return false;
+
+  try {
+    const res = await fetch('/api/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'NEUROEDUCA'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        sessionToken: tokens.sessionToken || undefined,
+        accessToken: tokens.accessToken || undefined,
+        ...getConfigBodyFields()
+      })
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Restaura a sessão autenticada a partir do cookie HttpOnly validado contra o Supabase
+ */
+export async function restoreSessionFromSupabase(): Promise<CloudLoginResult> {
+  if (typeof window === 'undefined') return { authenticated: false };
+
+  try {
+    const res = await fetch('/api/session/me', {
+      method: 'GET',
+      credentials: 'include'
+    });
+    if (!res.ok) return { authenticated: false };
+
+    const data = (await res.json()) as CloudLoginResult;
+    if (data?.authenticated && data?.account) {
+      if (data.sessionToken) setSupabaseSessionToken(data.sessionToken);
+      if (data.accessToken) setSupabaseAuthSessionToken(data.accessToken);
+      return data;
+    }
+    return { authenticated: false };
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+/**
+ * Encerra a sessão no Supabase, limpa os tokens em memória e remove o cookie HttpOnly
+ */
+export async function logoutFromSupabase(): Promise<void> {
+  const client = getSupabaseClient();
+  const currentSessionToken = inMemorySessionToken;
+  const authHeaders = getAuthFetchHeaders();
+
+  if (client && currentSessionToken && !shouldUseServerProxy()) {
+    try {
+      await client.rpc('logout_neuroeduca_session', { p_token: currentSessionToken });
+    } catch {
+      // Continua limpeza no servidor
+    }
+  }
+
+  clearSupabaseAuthSession();
+
+  if (typeof window !== 'undefined') {
+    try {
+      await fetch('/api/session/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'NEUROEDUCA',
+          ...authHeaders
+        },
+        credentials: 'include',
+        body: JSON.stringify(getConfigBodyFields())
+      });
+    } catch {
+      // Ignora erro de rede ao terminar sessão
+    }
+  }
+}
+
+/**
+ * Verifica se já existem contas cadastradas no Supabase (ou se requer configuração inicial)
+ */
+export async function checkSupabaseBootstrapStatus(): Promise<SupabaseBootstrapStatus> {
+  let client = getSupabaseClient();
+  if (!client) {
+    await fetchServerSupabaseStatus();
+    client = getSupabaseClient();
+  }
+
+  if (client) {
+    try {
+      const { data, error } = await client.rpc('check_neuroeduca_bootstrap_status');
+      if (!error && data) {
+        return {
+          hasAccounts: Boolean((data as any).hasAccounts),
+          bootstrapRequired: Boolean((data as any).bootstrapRequired)
+        };
+      }
+    } catch {
+      // Tenta via servidor Express
+    }
+  }
+
+  try {
+    const res = await fetch('/api/supabase/bootstrap-status', { credentials: 'include' });
+    if (!res.ok) {
+      return { hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true };
+    }
+    return (await res.json()) as SupabaseBootstrapStatus;
+  } catch {
+    return { hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true };
+  }
+}
+
+/**
+ * Cria o primeiro Super Administrador num projecto Supabase recém-inicializado
+ */
+export async function bootstrapSuperAdminInSupabase(
+  email: string,
+  fullName: string,
+  password: string
+): Promise<CloudLoginResult> {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanName = String(fullName || '').trim();
+  const cleanPassword = String(password || '').trim();
+  if (!cleanEmail || !cleanName || !cleanPassword) {
+    return { authenticated: false, error: 'Preencha nome, e-mail e palavra-passe.' };
+  }
+
+  let client = getSupabaseClient();
+  if (!client) {
+    await fetchServerSupabaseStatus();
+    client = getSupabaseClient();
+  }
+
+  if (client) {
+    try {
+      const { data, error } = await client.rpc('bootstrap_neuroeduca_super_admin', {
+        p_email: cleanEmail,
+        p_full_name: cleanName,
+        p_password: cleanPassword
+      });
+      if (error) {
+        return { authenticated: false, error: error.message };
+      }
+      const resObj = (data || {}) as CloudLoginResult;
+      if (resObj.authenticated && resObj.account) {
+        if (resObj.sessionToken) setSupabaseSessionToken(resObj.sessionToken);
+        await persistBrowserSessionCookie({
+          sessionToken: resObj.sessionToken,
+          accessToken: inMemoryAccessToken
+        });
+      }
+      return resObj;
+    } catch (err: any) {
+      return { authenticated: false, error: err?.message || 'Erro ao inicializar Super Administrador.' };
+    }
+  }
+
+  try {
+    const res = await fetch('/api/supabase/bootstrap-super-admin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'NEUROEDUCA'
+      },
+      credentials: 'include',
+      body: JSON.stringify({ email: cleanEmail, fullName: cleanName, password: cleanPassword })
+    });
+    const data = (await res.json()) as CloudLoginResult;
+    if (data.authenticated && data.sessionToken) {
+      setSupabaseSessionToken(data.sessionToken);
+      await persistBrowserSessionCookie({ sessionToken: data.sessionToken });
+    }
+    return data;
+  } catch (err: any) {
+    return { authenticated: false, error: err?.message || 'Erro de rede ao contactar servidor.' };
+  }
+}
+
+/**
+ * Marca um comunicado como lido no Supabase via RPC segura
+ */
+export async function markAnnouncementReadInSupabase(
+  announcementId: string,
+  readKey: string
+): Promise<boolean> {
+  if (shouldUseServerProxy()) {
+    try {
+      const res = await fetch('/api/supabase/announcement-read', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'NEUROEDUCA',
+          ...getAuthFetchHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({ announcementId, readKey, ...getConfigBodyFields() })
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { success?: boolean };
+        return Boolean(data?.success);
+      }
+    } catch {
+      // Fallback para cliente directo
+    }
+  }
+
+  const client = getSupabaseClient();
+  if (!client) return false;
+  try {
+    const { data, error } = await client.rpc('mark_neuroeduca_announcement_read', {
+      p_announcement_id: announcementId,
+      p_read_key: readKey
+    });
+    return !error && Boolean(data);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verifica credenciais via RPC segura (verify_neuroeduca_login) e/ou Supabase Auth (auth.users).
  */
 export async function verifySupabaseAccountLogin(
   email: string,
@@ -512,9 +879,9 @@ export async function verifySupabaseAccountLogin(
     client = getSupabaseClient();
     config = getSupabaseConfig();
   }
+
   if (client && config.url && config.anonKey) {
     try {
-      // 1. Verificação segura via RPC SECURITY DEFINER (sem expor passwords via REST)
       const { data: rpcData, error: rpcErr } = await client.rpc('verify_neuroeduca_login', {
         p_email: cleanEmail,
         p_password: cleanPassword
@@ -526,8 +893,18 @@ export async function verifySupabaseAccountLogin(
           return { authenticated: false, inactive: true };
         }
         if (resObj.authenticated && resObj.account) {
-          await signInSupabaseAuthSession(cleanEmail, cleanPassword);
-          return resObj;
+          if (resObj.sessionToken) {
+            setSupabaseSessionToken(resObj.sessionToken);
+          }
+          const accessToken = await signInSupabaseAuthSession(cleanEmail, cleanPassword);
+          await persistBrowserSessionCookie({
+            sessionToken: resObj.sessionToken,
+            accessToken
+          });
+          return {
+            ...resObj,
+            ...(accessToken ? { accessToken } : {})
+          };
         }
       }
 
@@ -550,7 +927,7 @@ export async function verifySupabaseAccountLogin(
         const authedClient = createValidatedSupabaseClient(
           normalizeSupabaseUrl(config.url),
           config.anonKey,
-          token || undefined
+          { accessToken: token || undefined }
         );
         const { data: syncedRow } = await authedClient
           .from('neuroeduca_accounts')
@@ -558,16 +935,19 @@ export async function verifySupabaseAccountLogin(
           .eq('id', cleanEmail)
           .maybeSingle();
 
-        const payload = ((syncedRow?.payload || {}) as Record<string, any>);
+        const payload = (syncedRow?.payload || {}) as Record<string, any>;
         const status = String(syncedRow?.status || payload.status || 'activo');
         if (status === 'inactivo') {
           clearSupabaseAuthSession();
           return { authenticated: false, inactive: true };
         }
 
+        await persistBrowserSessionCookie({ accessToken: token });
+
         const meta = (authData.user.user_metadata || {}) as Record<string, any>;
         return {
           authenticated: true,
+          accessToken: token || undefined,
           account: {
             email: syncedRow?.email || authData.user.email || cleanEmail,
             fullName:
@@ -587,37 +967,12 @@ export async function verifySupabaseAccountLogin(
         };
       }
 
-      // 3. Compatibilidade transitória caso a função RPC ainda não tenha sido aplicada no SQL Editor
       if (isRpcMissingError(rpcErr)) {
-        const { data, error } = await client
-          .from('neuroeduca_accounts')
-          .select('email, full_name, role, institution_id, municipality, province, status, payload')
-          .eq('id', cleanEmail)
-          .maybeSingle();
-
-        if (!error && data) {
-          const payload = (data.payload || {}) as Record<string, any>;
-          const status = String(data.status || payload.status || 'activo');
-          if (status === 'inactivo') {
-            return { authenticated: false, inactive: true };
-          }
-          const storedPassword = String(payload.password || '').trim();
-          if (storedPassword && storedPassword === cleanPassword) {
-            return {
-              authenticated: true,
-              account: {
-                email: data.email || cleanEmail,
-                fullName: data.full_name || payload.fullName || cleanEmail,
-                role: data.role || payload.role || 'director_geral',
-                institutionId: data.institution_id || payload.institutionId || undefined,
-                institutionName: payload.institutionName || undefined,
-                municipality: data.municipality || payload.municipality || undefined,
-                province: data.province || payload.province || undefined,
-                status: 'activo'
-              }
-            };
-          }
-        }
+        return {
+          authenticated: false,
+          error:
+            'Funções de autenticação RPC não encontradas no Supabase. Execute o script SQL completo (/supabase-neuroeduca-sync.sql) no SQL Editor.'
+        };
       }
 
       return { authenticated: false };
@@ -632,13 +987,22 @@ export async function verifySupabaseAccountLogin(
   try {
     const res = await fetch('/api/supabase/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'NEUROEDUCA'
+      },
+      credentials: 'include',
       body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
     });
     if (!res.ok) return { authenticated: false, cloudUnavailable: true };
     const cloudRes = (await res.json()) as CloudLoginResult;
-    if (cloudRes.authenticated && cloudRes.accessToken) {
-      setSupabaseAuthSessionToken(cloudRes.accessToken);
+    if (cloudRes.authenticated) {
+      if (cloudRes.sessionToken) setSupabaseSessionToken(cloudRes.sessionToken);
+      if (cloudRes.accessToken) setSupabaseAuthSessionToken(cloudRes.accessToken);
+      await persistBrowserSessionCookie({
+        sessionToken: cloudRes.sessionToken,
+        accessToken: cloudRes.accessToken
+      });
     }
     return cloudRes;
   } catch {
@@ -662,7 +1026,7 @@ export async function uploadStudentDocumentToSupabaseStorage(
   fileDataBase64: string
 ): Promise<StorageUploadResult> {
   const client = getSupabaseClient();
-  if (client) {
+  if (client && !shouldUseServerProxy()) {
     return uploadArchiveDocumentToStorage(client, doc, fileDataBase64);
   }
 
@@ -671,9 +1035,10 @@ export async function uploadStudentDocumentToSupabaseStorage(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+        ...getAuthFetchHeaders()
       },
-      body: JSON.stringify({ document: doc, fileDataBase64 })
+      credentials: 'include',
+      body: JSON.stringify({ document: doc, fileDataBase64, ...getConfigBodyFields() })
     });
     if (!res.ok) {
       return {
@@ -684,6 +1049,9 @@ export async function uploadStudentDocumentToSupabaseStorage(
     }
     return (await res.json()) as StorageUploadResult;
   } catch (err: any) {
+    if (client && !inMemorySessionToken) {
+      return uploadArchiveDocumentToStorage(client, doc, fileDataBase64);
+    }
     return {
       success: false,
       storageBucket: STUDENT_DOCS_BUCKET,
@@ -707,7 +1075,7 @@ export async function resolveSignedStudentDocumentUrl(
 ): Promise<string> {
   if (doc.storagePath) {
     const client = getSupabaseClient();
-    if (client) {
+    if (client && !shouldUseServerProxy()) {
       const signed = await getSignedArchiveUrlFromStorage(
         client,
         doc.storagePath,
@@ -725,12 +1093,14 @@ export async function resolveSignedStudentDocumentUrl(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+          ...getAuthFetchHeaders()
         },
+        credentials: 'include',
         body: JSON.stringify({
           storagePath: doc.storagePath,
           storageBucket: doc.storageBucket || STUDENT_DOCS_BUCKET,
-          downloadFileName
+          downloadFileName,
+          ...getConfigBodyFields()
         })
       });
       if (res.ok) {
@@ -740,7 +1110,7 @@ export async function resolveSignedStudentDocumentUrl(
         }
       }
     } catch {
-      // Fallback para URL guardado ou cópia local
+      // Fallback para URL guardado ou cópia do servidor
     }
   }
 
@@ -764,7 +1134,7 @@ export async function deleteStudentDocumentFromSupabaseStorage(
 ): Promise<void> {
   if (!storagePath) return;
   const client = getSupabaseClient();
-  if (client) {
+  if (client && !shouldUseServerProxy()) {
     await deleteArchiveDocumentFromStorage(client, storagePath, storageBucket);
     return;
   }
@@ -774,13 +1144,12 @@ export async function deleteStudentDocumentFromSupabaseStorage(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(inMemoryAccessToken ? { Authorization: `Bearer ${inMemoryAccessToken}` } : {})
+        ...getAuthFetchHeaders()
       },
-      body: JSON.stringify({ storagePath, storageBucket })
+      credentials: 'include',
+      body: JSON.stringify({ storagePath, storageBucket, ...getConfigBodyFields() })
     });
   } catch {
     // Fallback silencioso
   }
 }
-
-

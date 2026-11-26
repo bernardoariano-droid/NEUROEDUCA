@@ -34,7 +34,8 @@ import {
   BarChart3,
   Mail,
   Phone,
-  HeartHandshake
+  HeartHandshake,
+  Trash2
 } from 'lucide-react';
 import {
   Institution,
@@ -51,6 +52,7 @@ interface InstitutionsManagerProps {
   institutions: Institution[];
   onAddInstitution: (inst: Institution, adminUser?: UserProfile) => void;
   onUpdateInstitution?: (inst: Institution) => void;
+  onDeleteInstitution?: (institutionId: string) => void;
   onUpdateStatus: (id: string, newStatus: 'active' | 'suspended') => void;
   onSelectToManage?: (inst: Institution) => void;
   initialSearchTerm?: string;
@@ -62,6 +64,7 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
   institutions,
   onAddInstitution,
   onUpdateInstitution,
+  onDeleteInstitution,
   onUpdateStatus,
   initialSearchTerm = '',
   initialEditInstitutionId,
@@ -72,6 +75,7 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
   const [statusFilter, setStatusFilter] = useState('todos');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingInstId, setEditingInstId] = useState<string | null>(null);
+  const [instToDelete, setInstToDelete] = useState<Institution | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -529,14 +533,14 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
                     </td>
 
                     <td className="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
-                      {/* Editar Limites e Permissões */}
+                      {/* Editar Escola e Administrador */}
                       <button
                         onClick={() => openEditModal(inst)}
                         className="inline-flex items-center space-x-1 text-xs font-bold bg-[#eaf6ee] text-[#055827] hover:bg-[#d7efe0] px-2.5 py-1.5 rounded-lg border border-[#cde6d5] transition cursor-pointer"
-                        title="Configurar limite de turmas, subsistemas e funcionalidades"
+                        title="Editar escola, administrador, limite de turmas e funcionalidades"
                       >
-                        <Sliders className="w-3.5 h-3.5 text-[#067836]" />
-                        <span>Configurar</span>
+                        <Edit3 className="w-3.5 h-3.5 text-[#067836]" />
+                        <span>Editar</span>
                       </button>
 
                       {/* Suspender / Activar */}
@@ -546,13 +550,25 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
                         }
                         className={`inline-flex items-center p-1.5 rounded-lg text-xs transition cursor-pointer ${
                           inst.status === 'active'
-                            ? 'text-red-600 hover:bg-red-50'
+                            ? 'text-amber-600 hover:bg-amber-50'
                             : 'text-[#067836] hover:bg-[#eaf6ee]'
                         }`}
                         title={inst.status === 'active' ? 'Suspender instituição' : 'Activar instituição'}
                       >
                         <Power className="w-4 h-4" />
                       </button>
+
+                      {/* Apagar Instituição */}
+                      {onDeleteInstitution && (
+                        <button
+                          onClick={() => setInstToDelete(inst)}
+                          className="inline-flex items-center space-x-1 text-xs font-bold bg-red-50 text-red-700 hover:bg-red-100 px-2.5 py-1.5 rounded-lg border border-red-200 transition cursor-pointer"
+                          title="Apagar instituição da rede"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Apagar</span>
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -973,6 +989,74 @@ export const InstitutionsManager: React.FC<InstitutionsManagerProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMAÇÃO: APAGAR INSTITUIÇÃO */}
+      {instToDelete && (
+        <div className="fixed inset-0 z-50 bg-[#022c16]/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-red-200 shadow-2xl w-full max-w-md overflow-hidden animate-scale-up">
+            <div className="bg-red-600 text-white px-5 py-3.5 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="w-5 h-5" />
+                <h3 className="text-sm font-extrabold tracking-tight">
+                  Confirmar Eliminação da Escola
+                </h3>
+              </div>
+              <button
+                onClick={() => setInstToDelete(null)}
+                className="p-1 rounded-lg text-white/80 hover:text-white hover:bg-white/15 transition cursor-pointer"
+                aria-label="Fechar confirmação"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs text-[#064e26]">
+              <p className="leading-relaxed">
+                Tem a certeza que pretende apagar permanentemente a escola{' '}
+                <strong className="text-red-700">{instToDelete.name}</strong> ({instToDelete.code})?
+              </p>
+
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-red-800">
+                <p className="font-bold">Dados vinculados que serão removidos:</p>
+                <p>
+                  • Província / Município: <strong>{instToDelete.province} / {instToDelete.municipality}</strong>
+                </p>
+                <p>
+                  • Turmas registadas: <strong>{instToDelete.currentClassesCount}</strong> · Alunos matriculados:{' '}
+                  <strong>{instToDelete.currentStudentsCount}</strong>
+                </p>
+                <p>
+                  • Administrador e contas associadas desta instituição perderão o acesso.
+                </p>
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setInstToDelete(null)}
+                  className="px-4 py-2 rounded-xl bg-[#f7fbf8] border border-[#cde6d5] text-[#064e26] hover:bg-[#eaf6ee] font-bold cursor-pointer transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = instToDelete;
+                    setInstToDelete(null);
+                    onDeleteInstitution?.(target.id);
+                    setSuccessNotice(`Escola ${target.name} removida com sucesso.`);
+                    setTimeout(() => setSuccessNotice(null), 4500);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-sm cursor-pointer transition inline-flex items-center space-x-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Apagar Escola</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

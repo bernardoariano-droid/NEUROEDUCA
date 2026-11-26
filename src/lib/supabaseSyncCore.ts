@@ -29,7 +29,17 @@ export const NEUROEDUCA_ENTITY_TABLES = [
   { key: 'accounts', table: 'neuroeduca_accounts', label: 'Contas de Acesso' },
   { key: 'schoolUsers', table: 'neuroeduca_school_users', label: 'Utilizadores' },
   { key: 'subscriptionPlans', table: 'neuroeduca_subscription_plans', label: 'Planos SaaS' },
-  { key: 'auditLogs', table: 'neuroeduca_audit_logs', label: 'Auditoria' }
+  { key: 'auditLogs', table: 'neuroeduca_audit_logs', label: 'Auditoria' },
+  {
+    key: 'psychopedagogicalProtocols',
+    table: 'neuroeduca_psychopedagogical_protocols',
+    label: 'Protocolos Psicopedagógicos'
+  },
+  {
+    key: 'psychopedagogicalCases',
+    table: 'neuroeduca_psychopedagogical_cases',
+    label: 'Dossiês Psicopedagógicos'
+  }
 ] as const;
 
 export type NeuroeducaEntityTableKey = (typeof NEUROEDUCA_ENTITY_TABLES)[number]['key'];
@@ -69,6 +79,7 @@ export interface StorageUploadResult {
 export interface SupabaseSyncPushResult {
   success: boolean;
   syncedCount: number;
+  deletedCount?: number;
   tableCounts: Record<string, number>;
   missingTables: string[];
   errors: string[];
@@ -84,6 +95,25 @@ export interface SupabaseSyncPullResult {
   errors: string[];
   pulledAt: string;
   cloudUpdatedAt?: string;
+}
+
+export interface SupabaseMutationBatch {
+  upserts?: Partial<StorageDataBundle>;
+  deletes?: Partial<Record<NeuroeducaEntityTableKey, string[]>>;
+  fkContext?: Partial<StorageDataBundle>;
+}
+
+export interface SupabaseMutateResult {
+  success: boolean;
+  syncedCount: number;
+  deletedCount: number;
+  errors: string[];
+  syncedAt: string;
+}
+
+export interface SupabaseClientAuthOptions {
+  accessToken?: string;
+  sessionToken?: string;
 }
 
 /**
@@ -114,7 +144,6 @@ export function normalizeSupabaseUrl(rawUrl: string): string {
     );
   }
 
-  // Remove /rest/v1, /auth/v1 ou barras finais mantendo apenas a origem oficial
   return parsed.origin;
 }
 
@@ -148,28 +177,37 @@ export function isPermissionDeniedError(error: any): boolean {
 export function createValidatedSupabaseClient(
   rawUrl: string,
   anonKey: string,
-  accessToken?: string
+  authOrToken?: string | SupabaseClientAuthOptions
 ): SupabaseClient {
   const normalizedUrl = normalizeSupabaseUrl(rawUrl);
   const cleanKey = String(anonKey || '').trim();
-  const cleanToken = String(accessToken || '').trim();
   if (!normalizedUrl || !cleanKey) {
     throw new Error('URL do Supabase ou chave pública em falta.');
   }
+
+  const cleanAccessToken =
+    typeof authOrToken === 'string'
+      ? String(authOrToken || '').trim()
+      : String(authOrToken?.accessToken || '').trim();
+  const cleanSessionToken =
+    typeof authOrToken === 'object' && authOrToken !== null
+      ? String(authOrToken.sessionToken || '').trim()
+      : '';
+
+  const headers: Record<string, string> = {};
+  if (cleanAccessToken) {
+    headers.Authorization = `Bearer ${cleanAccessToken}`;
+  }
+  if (cleanSessionToken) {
+    headers['x-ne-session'] = cleanSessionToken;
+  }
+
   return createClient(normalizedUrl, cleanKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false
     },
-    ...(cleanToken
-      ? {
-          global: {
-            headers: {
-              Authorization: `Bearer ${cleanToken}`
-            }
-          }
-        }
-      : {})
+    ...(Object.keys(headers).length > 0 ? { global: { headers } } : {})
   });
 }
 
@@ -333,7 +371,7 @@ export async function deleteArchiveDocumentFromStorage(
 export async function checkSupabaseTablesHealth(
   rawUrl: string,
   anonKey: string,
-  accessToken?: string
+  authOrToken?: string | SupabaseClientAuthOptions
 ): Promise<SupabaseHealthResult> {
   let normalizedUrl = '';
   try {
@@ -363,7 +401,7 @@ export async function checkSupabaseTablesHealth(
   }
 
   try {
-    const client = createValidatedSupabaseClient(normalizedUrl, anonKey, accessToken);
+    const client = createValidatedSupabaseClient(normalizedUrl, anonKey, authOrToken);
     const details = await Promise.all(
       NEUROEDUCA_ENTITY_TABLES.map(async (item): Promise<TableHealthInfo> => {
         const { count, error } = await client
@@ -455,8 +493,7 @@ export async function checkSupabaseTablesHealth(
     if (tablesReady === 0) {
       return {
         success: true,
-        message:
-          'Ligação ao projecto Supabase verificada com sucesso! Falta apenas executar o Script SQL de criação das 16 tabelas e Storage no SQL Editor do Supabase.',
+        message: `Ligação ao projecto Supabase verificada com sucesso! Falta apenas executar o Script SQL de criação das ${NEUROEDUCA_ENTITY_TABLES.length} tabelas e Storage no SQL Editor do Supabase.`,
         normalizedUrl,
         tablesReady,
         totalTables: NEUROEDUCA_ENTITY_TABLES.length,
@@ -516,6 +553,7 @@ interface FkLookupSets {
   institutionIds?: Set<string>;
   teacherIds?: Set<string>;
   classIds?: Set<string>;
+  studentIds?: Set<string>;
   invoiceIds?: Set<string>;
   accountIds?: Set<string>;
 }
@@ -536,6 +574,7 @@ function buildFkLookupSets(bundle: Partial<StorageDataBundle>): FkLookupSets {
     institutionIds: makeSet(b.institutions, (i) => (i?.id ? String(i.id) : null)),
     teacherIds: makeSet(b.teachers, (i) => (i?.id ? String(i.id) : null)),
     classIds: makeSet(b.classes, (i) => (i?.id ? String(i.id) : null)),
+    studentIds: makeSet(b.students, (i) => (i?.id ? String(i.id) : null)),
     invoiceIds: makeSet(b.invoices, (i) => (i?.id ? String(i.id) : null)),
     accountIds: makeSet(b.accounts, (i) => {
       const e = String(i?.email || '').trim().toLowerCase();
@@ -699,7 +738,6 @@ function buildRowForEntity(
         updated_at: nowIso
       };
     case 'digitalArchive': {
-      // Quando o ficheiro já está no Supabase Storage (storagePath) ou é muito pesado, não duplicar base64 em JSONB
       const hasStorage = Boolean(item.storagePath);
       const sanitizedPayload =
         hasStorage || (item.dataUrl && String(item.dataUrl).length > 180_000)
@@ -810,6 +848,31 @@ function buildRowForEntity(
         payload: item,
         updated_at: nowIso
       };
+    case 'psychopedagogicalProtocols':
+      return {
+        id: String(item.id),
+        code: item.code || null,
+        title: item.title || 'Protocolo Psicopedagógico',
+        category: item.category || null,
+        target_subsystem: Array.isArray(item.targetSubsystems)
+          ? item.targetSubsystems.join(', ')
+          : null,
+        is_active: item.isActive !== false,
+        payload: item,
+        updated_at: nowIso
+      };
+    case 'psychopedagogicalCases':
+      return {
+        id: String(item.id),
+        institution_id: String(item.institutionId || ''),
+        student_id: sanitizeNullableFk(item.studentId, fkLookup.studentIds, ['']),
+        case_code: item.caseCode || null,
+        student_name: item.studentName || 'Aluno',
+        status: item.status || 'em_triagem',
+        risk_level: item.priority || null,
+        payload: item,
+        updated_at: nowIso
+      };
     default:
       return null;
   }
@@ -829,9 +892,141 @@ async function upsertInBatches(
   return null;
 }
 
+async function deleteIdsInBatches(
+  client: SupabaseClient,
+  table: string,
+  ids: string[],
+  batchSize = 100
+) {
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (let i = 0; i < uniqueIds.length; i += batchSize) {
+    const chunk = uniqueIds.slice(i, i + batchSize);
+    const { error } = await client.from(table).delete().in('id', chunk);
+    if (error) return error;
+  }
+  return null;
+}
+
+async function updateSyncMetaSafe(
+  client: SupabaseClient,
+  syncedAt: string,
+  summary: Record<string, number>,
+  appVersion = '3.0'
+): Promise<boolean> {
+  const { error: metaErr } = await client.from('neuroeduca_sync_meta').upsert(
+    {
+      id: 'primary',
+      last_pushed_at: syncedAt,
+      app_version: appVersion,
+      summary,
+      updated_at: syncedAt
+    },
+    { onConflict: 'id' }
+  );
+  return Boolean(metaErr && isTableMissingError(metaErr));
+}
+
+/**
+ * Sincronização incremental imediata (Upserts em ordem pai->filho + Deletes explícitos em ordem filho->pai)
+ */
+export async function syncChangesToSupabase(
+  client: SupabaseClient,
+  batch: SupabaseMutationBatch
+): Promise<SupabaseMutateResult> {
+  const syncedAt = new Date().toISOString();
+  const errors: string[] = [];
+  let syncedCount = 0;
+  let deletedCount = 0;
+
+  const fkLookup = buildFkLookupSets({
+    ...(batch.fkContext || {}),
+    ...(batch.upserts || {})
+  });
+
+  // 1. Upserts em ordem pai -> filho
+  if (batch.upserts) {
+    for (const def of NEUROEDUCA_ENTITY_TABLES) {
+      let list: any[] = (batch.upserts as Record<string, any>)[def.key];
+      if (!Array.isArray(list) || list.length === 0) continue;
+
+      if (def.key === 'digitalArchive') {
+        const migratedList: any[] = [];
+        for (const item of list) {
+          if (item && item.dataUrl && !item.storagePath) {
+            const uploadRes = await uploadArchiveDocumentToStorage(client, item, item.dataUrl);
+            if (uploadRes.success && uploadRes.storagePath && uploadRes.fileUrl) {
+              migratedList.push({
+                ...item,
+                storageBucket: uploadRes.storageBucket,
+                storagePath: uploadRes.storagePath,
+                fileUrl: uploadRes.fileUrl,
+                dataUrl: undefined
+              });
+              continue;
+            }
+          }
+          migratedList.push(item);
+        }
+        list = migratedList;
+      }
+
+      const rows = list
+        .map((item: any) => buildRowForEntity(def.key, item, syncedAt, fkLookup))
+        .filter((r: Record<string, any> | null): r is Record<string, any> => r !== null);
+
+      if (rows.length === 0) continue;
+
+      const err = await upsertInBatches(client, def.table, rows);
+      if (err) {
+        errors.push(`${def.label} (${def.table}): ${err.message}`);
+      } else {
+        syncedCount += rows.length;
+      }
+    }
+  }
+
+  // 2. Eliminações explícitas em ordem reversa (filho -> pai)
+  if (batch.deletes) {
+    const reverseDefs = [...NEUROEDUCA_ENTITY_TABLES].reverse();
+    for (const def of reverseDefs) {
+      const rawIds = batch.deletes[def.key];
+      if (!Array.isArray(rawIds) || rawIds.length === 0) continue;
+
+      const normalizedIds =
+        def.key === 'accounts'
+          ? rawIds.map((id) => String(id || '').trim().toLowerCase()).filter(Boolean)
+          : rawIds.map((id) => String(id || '').trim()).filter(Boolean);
+
+      if (normalizedIds.length === 0) continue;
+
+      const err = await deleteIdsInBatches(client, def.table, normalizedIds);
+      if (err) {
+        if (!isTableMissingError(err)) {
+          errors.push(`Eliminar ${def.label} (${def.table}): ${err.message}`);
+        }
+      } else {
+        deletedCount += normalizedIds.length;
+      }
+    }
+  }
+
+  if (syncedCount > 0 || deletedCount > 0) {
+    await updateSyncMetaSafe(client, syncedAt, { syncedCount, deletedCount });
+  }
+
+  return {
+    success: errors.length === 0,
+    syncedCount,
+    deletedCount,
+    errors,
+    syncedAt
+  };
+}
+
 export async function pushBundleToSupabase(
   client: SupabaseClient,
-  bundle: Partial<StorageDataBundle>
+  bundle: Partial<StorageDataBundle>,
+  options?: { pruneMissing?: boolean }
 ): Promise<SupabaseSyncPushResult> {
   const syncedAt = new Date().toISOString();
   const errors: string[] = [];
@@ -839,84 +1034,129 @@ export async function pushBundleToSupabase(
   const tableCounts: Record<string, number> = {};
   const fkLookup = buildFkLookupSets(bundle);
   let syncedCount = 0;
+  let deletedCount = 0;
 
   for (const def of NEUROEDUCA_ENTITY_TABLES) {
     let list: any[] = (bundle as Record<string, any>)[def.key];
-    if (!Array.isArray(list) || list.length === 0) {
-      tableCounts[def.table] = 0;
-      continue;
+    if (!Array.isArray(list)) {
+      list = [];
     }
 
-    // Antes de gravar a tabela neuroeduca_digital_archive, enviar anexos em base64 pendentes para o Supabase Storage
-    if (def.key === 'digitalArchive') {
-      const migratedList: any[] = [];
-      for (const item of list) {
-        if (item && item.dataUrl && !item.storagePath) {
-          const uploadRes = await uploadArchiveDocumentToStorage(client, item, item.dataUrl);
-          if (uploadRes.success && uploadRes.storagePath && uploadRes.fileUrl) {
-            migratedList.push({
-              ...item,
-              storageBucket: uploadRes.storageBucket,
-              storagePath: uploadRes.storagePath,
-              fileUrl: uploadRes.fileUrl,
-              dataUrl: undefined
-            });
-            continue;
+    if (list.length > 0) {
+      if (def.key === 'digitalArchive') {
+        const migratedList: any[] = [];
+        for (const item of list) {
+          if (item && item.dataUrl && !item.storagePath) {
+            const uploadRes = await uploadArchiveDocumentToStorage(client, item, item.dataUrl);
+            if (uploadRes.success && uploadRes.storagePath && uploadRes.fileUrl) {
+              migratedList.push({
+                ...item,
+                storageBucket: uploadRes.storageBucket,
+                storagePath: uploadRes.storagePath,
+                fileUrl: uploadRes.fileUrl,
+                dataUrl: undefined
+              });
+              continue;
+            }
           }
+          migratedList.push(item);
         }
-        migratedList.push(item);
+        list = migratedList;
       }
-      list = migratedList;
-    }
 
-    const rows = list
-      .map((item: any) => buildRowForEntity(def.key, item, syncedAt, fkLookup))
-      .filter((r: Record<string, any> | null): r is Record<string, any> => r !== null);
+      const rows = list
+        .map((item: any) => buildRowForEntity(def.key, item, syncedAt, fkLookup))
+        .filter((r: Record<string, any> | null): r is Record<string, any> => r !== null);
 
-    if (rows.length === 0) {
-      tableCounts[def.table] = 0;
-      continue;
-    }
-
-    const error = await upsertInBatches(client, def.table, rows);
-    if (error) {
-      if (isTableMissingError(error)) {
-        missingTables.push(def.table);
+      if (rows.length > 0) {
+        const error = await upsertInBatches(client, def.table, rows);
+        if (error) {
+          if (isTableMissingError(error)) {
+            missingTables.push(def.table);
+          } else {
+            errors.push(`${def.label} (${def.table}): ${error.message}`);
+          }
+          tableCounts[def.table] = 0;
+        } else {
+          tableCounts[def.table] = rows.length;
+          syncedCount += rows.length;
+        }
       } else {
-        errors.push(`${def.label} (${def.table}): ${error.message}`);
+        tableCounts[def.table] = 0;
       }
-      tableCounts[def.table] = 0;
     } else {
-      tableCounts[def.table] = rows.length;
-      syncedCount += rows.length;
+      tableCounts[def.table] = 0;
     }
   }
 
-  // Atualizar registo mestre de metadados de sincronização
-  const { error: metaErr } = await client.from('neuroeduca_sync_meta').upsert(
-    {
-      id: 'primary',
-      last_pushed_at: syncedAt,
-      app_version: bundle.version || '2.2',
-      summary: tableCounts,
-      updated_at: syncedAt
-    },
-    { onConflict: 'id' }
-  );
+  // Reconciliação opcional de registos removidos no frontend (filho -> pai)
+  if (options?.pruneMissing) {
+    const reverseDefs = [...NEUROEDUCA_ENTITY_TABLES].reverse();
+    for (const def of reverseDefs) {
+      if (missingTables.includes(def.table)) continue;
+      const list = (bundle as Record<string, any>)[def.key];
+      if (!Array.isArray(list)) continue;
 
-  if (metaErr && isTableMissingError(metaErr)) {
+      const localIdSet = new Set(
+        list
+          .map((item: any) => {
+            if (def.key === 'accounts') {
+              return String(item?.email || '').trim().toLowerCase();
+            }
+            return String(item?.id || '').trim();
+          })
+          .filter(Boolean)
+      );
+
+      const { data: remoteRows, error: fetchErr } = await client
+        .from(def.table)
+        .select('id')
+        .limit(5000);
+
+      if (fetchErr) {
+        if (!isTableMissingError(fetchErr) && !isPermissionDeniedError(fetchErr)) {
+          errors.push(`Reconciliar ${def.label} (${def.table}): ${fetchErr.message}`);
+        }
+        continue;
+      }
+
+      const staleIds = (remoteRows || [])
+        .map((r: any) => String(r?.id || '').trim())
+        .filter((id: string) => Boolean(id) && !localIdSet.has(id));
+
+      if (staleIds.length > 0) {
+        const delErr = await deleteIdsInBatches(client, def.table, staleIds);
+        if (delErr) {
+          if (!isPermissionDeniedError(delErr)) {
+            errors.push(`Limpar ${def.label} (${def.table}): ${delErr.message}`);
+          }
+        } else {
+          deletedCount += staleIds.length;
+        }
+      }
+    }
+  }
+
+  const metaMissing = await updateSyncMetaSafe(
+    client,
+    syncedAt,
+    tableCounts,
+    bundle.version || '3.0'
+  );
+  if (metaMissing) {
     missingTables.push('neuroeduca_sync_meta');
   }
 
   if (missingTables.length > 0) {
     errors.unshift(
-      `${missingTables.length} tabela(s) ainda não existem no Supabase (${missingTables.slice(0, 3).join(', ')}${missingTables.length > 3 ? '...' : ''}). Execute o Script SQL de integração na Aba 3.`
+      `${missingTables.length} tabela(s) ainda não existem no Supabase (${missingTables.slice(0, 3).join(', ')}${missingTables.length > 3 ? '...' : ''}). Execute o Script SQL de integração na Aba 2.`
     );
   }
 
   return {
     success: errors.length === 0 && missingTables.length === 0,
     syncedCount,
+    deletedCount,
     tableCounts,
     missingTables,
     errors,
@@ -976,15 +1216,15 @@ export async function pullBundleFromSupabase(
 
   if (missingTables.length > 0) {
     errors.unshift(
-      `${missingTables.length} tabela(s) ainda não existem no Supabase. Execute o Script SQL na Aba 3 para inicializar o banco.`
+      `${missingTables.length} tabela(s) ainda não existem no Supabase. Execute o Script SQL na Aba 2 para inicializar o banco.`
     );
   }
 
-  const hasInstitutions = Array.isArray(bundle.institutions) && bundle.institutions.length > 0;
+  const allSucceeded = errors.length === 0 && missingTables.length === 0;
 
   return {
-    success: errors.length === 0 && missingTables.length === 0,
-    bundle: hasInstitutions || pulledCount > 0 ? (bundle as Partial<StorageDataBundle>) : null,
+    success: allSucceeded,
+    bundle: allSucceeded || pulledCount > 0 ? (bundle as Partial<StorageDataBundle>) : null,
     pulledCount,
     tableCounts,
     missingTables,

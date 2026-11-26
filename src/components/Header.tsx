@@ -517,7 +517,7 @@ export const Header: React.FC<HeaderProps> = ({
                         className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#eaf6ee] text-slate-700 hover:text-[#067836] font-semibold transition cursor-pointer"
                       >
                         <HardDrive className="w-4 h-4 text-[#067836]" />
-                        <span>Memória Localhost &amp; Backup</span>
+                        <span>Backup JSON &amp; Nuvem Supabase</span>
                       </button>
                     )}
 

@@ -1,8 +1,8 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * NEUROEDUCA - Portal de Autenticação SaaS
- * Design inspirado na identidade institucional verde esmeralda e branco (Angola)
+ * NEUROEDUCA - Portal de Autenticação SaaS (100% Supabase)
+ * Design institucional verde esmeralda e branco (Angola)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -18,28 +18,26 @@ import {
   Check,
   Globe,
   ChevronDown,
-  Cloud
+  Cloud,
+  Sparkles
 } from 'lucide-react';
-import { Institution, StoredCredential, UserProfile, UserRole } from '../../types';
-import { storageService } from '../../services/storageService';
+import { Institution, UserProfile, UserRole } from '../../types';
 import {
+  bootstrapSuperAdminInSupabase,
+  checkSupabaseBootstrapStatus,
   fetchServerSupabaseStatus,
   getSupabaseConfig,
   normalizeSupabaseUrl,
   normalizeSupabaseUrlSafe,
-  pullSupabaseDataToLocal,
   saveServerSupabaseConfig,
   saveSupabaseConfig,
-  signInSupabaseAuthSession,
   verifySupabaseAccountLogin
 } from '../../lib/supabaseClient';
 
 interface AuthPageProps {
   institutions: Institution[];
-  onLogin: (user: UserProfile, institution: Institution | null) => void;
+  onLogin: (user: UserProfile, institution: Institution | null) => Promise<void> | void;
 }
-
-const REMEMBER_EMAIL_KEY = 'neuroeduca_remembered_email';
 
 export const AuthPage: React.FC<AuthPageProps> = ({
   institutions,
@@ -60,33 +58,33 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   const [language, setLanguage] = useState<'pt' | 'en'>('pt');
   const [showLangMenu, setShowLangMenu] = useState(false);
 
-  // Estados do Login
-  const [loginEmail, setLoginEmail] = useState(() => {
-    try {
-      return localStorage.getItem(REMEMBER_EMAIL_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
+  // Estados do Login (sem armazenamento local de credenciais)
+  const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(() => {
-    try {
-      return Boolean(localStorage.getItem(REMEMBER_EMAIL_KEY));
-    } catch {
-      return false;
-    }
-  });
+
+  // Inicialização do primeiro Super Administrador quando a base Supabase estiver vazia
+  const [bootstrapRequired, setBootstrapRequired] = useState(false);
+  const [bootstrapName, setBootstrapName] = useState('');
+  const [bootstrapEmail, setBootstrapEmail] = useState('');
+  const [bootstrapPassword, setBootstrapPassword] = useState('');
 
   useEffect(() => {
     let active = true;
     fetchServerSupabaseStatus()
-      .then((status) => {
+      .then(async (status) => {
         if (!active) return;
         const cfg = getSupabaseConfig();
         const ready = Boolean(status.serverConfigured || (cfg.url && cfg.anonKey));
         setIsCloudReady(ready);
         if (cfg.url) setCloudUrlInput(cfg.url);
         if (cfg.anonKey) setCloudKeyInput(cfg.anonKey);
+
+        if (ready) {
+          const boot = await checkSupabaseBootstrapStatus();
+          if (active) {
+            setBootstrapRequired(Boolean(boot.bootstrapRequired && !boot.hasAccounts));
+          }
+        }
       })
       .catch(() => {});
     return () => {
@@ -95,6 +93,65 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   }, []);
 
   const isPt = language === 'pt';
+
+  const dispatchAuthenticatedAccount = async (account: {
+    email: string;
+    fullName: string;
+    role: string;
+    institutionId?: string;
+    institutionName?: string;
+    municipality?: string;
+    province?: string;
+  }) => {
+    const cleanEmail = account.email.trim().toLowerCase();
+    const role = (account.role || 'director_geral') as UserRole;
+
+    setSuccessMsg(
+      isPt
+        ? `Autenticado na nuvem Supabase (${role.replace(/_/g, ' ')})! A entrar...`
+        : `Authenticated on Supabase cloud (${role.replace(/_/g, ' ')})! Entering...`
+    );
+
+    if (role === 'super_admin') {
+      const profile: UserProfile = {
+        id: `usr-super-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`,
+        fullName: account.fullName,
+        email: cleanEmail,
+        role: 'super_admin',
+        institutionName: 'Administração Geral SaaS'
+      };
+      await onLogin(profile, null);
+      return;
+    }
+
+    if (role === 'director_municipal') {
+      const municipality = account.municipality || 'Kilamba Kiaxi';
+      const province = account.province || 'Luanda';
+      const profile: UserProfile = {
+        id: `usr-mun-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`,
+        fullName: account.fullName,
+        email: cleanEmail,
+        role: 'director_municipal',
+        municipality,
+        province,
+        institutionName: `Direcção Municipal da Educação de ${municipality}`
+      };
+      await onLogin(profile, null);
+      return;
+    }
+
+    const targetInst =
+      institutions.find((i) => i.id === account.institutionId) || null;
+    const profile: UserProfile = {
+      id: `usr-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`,
+      fullName: account.fullName,
+      email: cleanEmail,
+      role,
+      institutionId: targetInst?.id || account.institutionId,
+      institutionName: targetInst?.name || account.institutionName
+    };
+    await onLogin(profile, targetInst);
+  };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,146 +173,73 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
     setIsAuthenticating(true);
     try {
-      const latestAccounts = storageService.getAccounts();
-      let matched = latestAccounts.find((acc) => acc.email.toLowerCase() === cleanEmail);
-
-      if (!matched || (matched.password && matched.password !== cleanPassword)) {
-        const cloudCheck = await verifySupabaseAccountLogin(cleanEmail, cleanPassword);
-        if (cloudCheck.inactive) {
-          setErrorMsg(
-            isPt
-              ? 'Esta conta encontra-se desactivada. Contacte a administração.'
-              : 'This account is deactivated. Contact administration.'
-          );
-          return;
-        }
-        if (cloudCheck.authenticated && cloudCheck.account) {
-          const syncedCred: StoredCredential = {
-            email: cloudCheck.account.email,
-            password: cleanPassword,
-            fullName: cloudCheck.account.fullName,
-            role: cloudCheck.account.role as UserRole,
-            institutionId: cloudCheck.account.institutionId,
-            institutionName: cloudCheck.account.institutionName,
-            municipality: cloudCheck.account.municipality,
-            province: cloudCheck.account.province,
-            status: 'activo'
-          };
-          storageService.upsertAccount(syncedCred);
-          matched = syncedCred;
-          setIsCloudReady(true);
-        } else if (!matched) {
-          if (cloudCheck.cloudUnavailable) {
-            setShowCloudConfigBox(true);
-            setErrorMsg(
-              isPt
-                ? 'Ligação ao Supabase ainda não configurada neste servidor. Cole abaixo o URL e a Chave Pública (ou defina em Settings > Secrets / Vercel Env).'
-                : 'Supabase connection is not configured yet. Paste the URL and Public Key below.'
-            );
-            return;
-          }
-          if (cloudCheck.error) {
-            setErrorMsg(
-              isPt
-                ? `Erro ao verificar conta no Supabase: ${cloudCheck.error}`
-                : `Supabase auth error: ${cloudCheck.error}`
-            );
-            return;
-          }
-        }
-      }
-
-      if (!matched) {
+      const cloudCheck = await verifySupabaseAccountLogin(cleanEmail, cleanPassword);
+      if (cloudCheck.inactive) {
         setErrorMsg(
           isPt
-            ? 'E-mail não encontrado ou palavra-passe incorrecta. Verifique os seus dados.'
-            : 'Email not found or incorrect password. Please check your credentials.'
+            ? 'Esta conta encontra-se desactivada pelo Administrador. Contacte a direcção.'
+            : 'This account is deactivated. Contact administration.'
         );
         return;
       }
 
-      if (matched.status === 'inactivo') {
+      if (cloudCheck.cloudUnavailable) {
+        setShowCloudConfigBox(true);
         setErrorMsg(
           isPt
-            ? 'Esta conta encontra-se desactivada pelo Administrador da Escola. Contacte a direcção.'
-            : 'This account is deactivated by the School Administrator. Contact administration.'
+            ? 'Ligação ao Supabase ainda não configurada. Cole abaixo o URL e a Chave Pública do seu projecto Supabase.'
+            : 'Supabase connection is not configured yet. Paste the URL and Public Key below.'
         );
         return;
       }
 
-      if (matched.password && matched.password !== cleanPassword) {
-        setErrorMsg(isPt ? 'Palavra-passe incorrecta. Por favor tente novamente.' : 'Incorrect password. Please try again.');
+      if (cloudCheck.error) {
+        setErrorMsg(
+          isPt
+            ? `Erro ao verificar conta no Supabase: ${cloudCheck.error}`
+            : `Supabase auth error: ${cloudCheck.error}`
+        );
         return;
       }
 
-      try {
-        if (rememberMe) {
-          localStorage.setItem(REMEMBER_EMAIL_KEY, cleanEmail);
-        } else {
-          localStorage.removeItem(REMEMBER_EMAIL_KEY);
-        }
-      } catch {
-        // Ignora erros de armazenamento
+      if (!cloudCheck.authenticated || !cloudCheck.account) {
+        setErrorMsg(
+          isPt
+            ? 'E-mail não encontrado ou palavra-passe incorrecta no Supabase.'
+            : 'Email not found or incorrect password on Supabase.'
+        );
+        return;
       }
 
-      await signInSupabaseAuthSession(cleanEmail, cleanPassword).catch(() => {});
+      setIsCloudReady(true);
+      await dispatchAuthenticatedAccount(cloudCheck.account);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
 
-      let availableInstitutions = institutions;
-      if (
-        matched.institutionId &&
-        !availableInstitutions.some((i) => i.id === matched!.institutionId)
-      ) {
-        const pulled = await pullSupabaseDataToLocal().catch(() => null);
-        if (pulled?.success && pulled.bundle?.institutions?.length) {
-          availableInstitutions = pulled.bundle.institutions;
-        }
-      }
-
-      setSuccessMsg(
-        isPt
-          ? `Autenticado com sucesso (${matched.role.replace(/_/g, ' ')})! A entrar...`
-          : `Signed in successfully (${matched.role.replace(/_/g, ' ')})! Entering...`
+  const handleBootstrapSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+    setIsAuthenticating(true);
+    try {
+      const res = await bootstrapSuperAdminInSupabase(
+        bootstrapEmail,
+        bootstrapName,
+        bootstrapPassword
       );
-
-      setTimeout(() => {
-        if (matched!.role === 'super_admin') {
-          const profile: UserProfile = {
-            id: `usr-super-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`,
-            fullName: matched!.fullName,
-            email: matched!.email,
-            role: 'super_admin',
-            institutionName: 'Administração Geral SaaS'
-          };
-          onLogin(profile, null);
-        } else if (matched!.role === 'director_municipal') {
-          const municipality = matched!.municipality || 'Kilamba Kiaxi';
-          const province = matched!.province || 'Luanda';
-          const profile: UserProfile = {
-            id: `usr-mun-${Date.now()}`,
-            fullName: matched!.fullName,
-            email: matched!.email,
-            role: 'director_municipal',
-            municipality,
-            province,
-            institutionName: `Direcção Municipal da Educação de ${municipality}`
-          };
-          onLogin(profile, null);
-        } else {
-          const targetInst =
-            availableInstitutions.find((i) => i.id === matched!.institutionId) ||
-            availableInstitutions[0];
-
-          const profile: UserProfile = {
-            id: `usr-${Date.now()}`,
-            fullName: matched!.fullName,
-            email: matched!.email,
-            role: matched!.role || 'director_geral',
-            institutionId: targetInst?.id || matched!.institutionId,
-            institutionName: targetInst?.name || matched!.institutionName
-          };
-          onLogin(profile, targetInst || null);
-        }
-      }, 300);
+      if (!res.authenticated || !res.account) {
+        setErrorMsg(
+          res.error ||
+            (isPt
+              ? 'Não foi possível criar o primeiro Super Administrador. Verifique se o Script SQL foi executado no Supabase.'
+              : 'Could not create initial Super Admin.')
+        );
+        return;
+      }
+      setBootstrapRequired(false);
+      await dispatchAuthenticatedAccount(res.account);
     } finally {
       setIsAuthenticating(false);
     }
@@ -298,22 +282,24 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     setIsCloudReady(true);
     setErrorMsg('');
 
+    const boot = await checkSupabaseBootstrapStatus();
+    setBootstrapRequired(Boolean(boot.bootstrapRequired && !boot.hasAccounts));
+
     if (loginEmail.trim() && loginPassword.trim()) {
       await handleLoginSubmit({ preventDefault: () => {} } as React.FormEvent);
     } else {
       setSuccessMsg(
         isPt
-          ? 'Ligação ao Supabase guardada! Agora insira o seu e-mail e palavra-passe e clique em Entrar.'
-          : 'Supabase connection saved! Now enter your email and password.'
+          ? 'Ligação ao Supabase configurada! Agora insira o seu e-mail e palavra-passe e clique em Entrar.'
+          : 'Supabase connection configured! Enter your email and password to sign in.'
       );
     }
   };
 
   return (
     <div className="min-h-screen flex flex-col justify-between relative overflow-hidden bg-gradient-to-br from-[#ffffff] via-[#f5fbf7] to-[#e1f2e7] font-sans text-[#0b2316]">
-      {/* DECORAÇÃO ORGÂNICA DE FUNDO (ESTILO DO DESIGN DE REFERÊNCIA) */}
+      {/* DECORAÇÃO ORGÂNICA DE FUNDO */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-        {/* Curva verde superior esquerda */}
         <svg
           viewBox="0 0 360 280"
           className="absolute -top-6 -left-6 w-52 sm:w-72 h-auto text-[#08833c]"
@@ -329,10 +315,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           </defs>
         </svg>
 
-        {/* Brilho solar suave ao centro-direita */}
         <div className="absolute top-[-10%] right-[12%] w-[520px] h-[520px] rounded-full bg-gradient-to-br from-[#d3eedb]/65 via-[#e8f7ed]/40 to-transparent blur-3xl" />
 
-        {/* Onda verde diagonal inferior esquerda + canto inferior direito */}
         <svg
           viewBox="0 0 1440 320"
           preserveAspectRatio="none"
@@ -345,11 +329,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               <stop offset="100%" stopColor="#149a47" />
             </linearGradient>
           </defs>
-          {/* Faixa menta clara diagonal */}
           <path d="M0 40 L920 320 L0 320 Z" fill="#bfe6cb" />
-          {/* Faixa verde esmeralda principal */}
           <path d="M0 78 L870 320 L0 320 Z" fill="url(#bottomRibbonGrad)" />
-          {/* Detalhe verde no canto inferior direito */}
           <path d="M1260 320 C1340 285 1400 235 1440 165 L1440 320 Z" fill="#077e39" />
         </svg>
       </div>
@@ -400,12 +381,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         </div>
       </header>
 
-      {/* CONTEÚDO PRINCIPAL: ESQUERDA INSTITUCIONAL + DIREITA CARTÃO FLUTUANTE */}
+      {/* CONTEÚDO PRINCIPAL */}
       <main className="relative z-10 flex-1 w-full max-w-7xl mx-auto px-5 sm:px-8 py-6 lg:py-4 flex flex-col lg:flex-row items-center justify-between gap-10 lg:gap-12">
-        {/* COLUNA ESQUERDA: MARCA, SLOGAN, BENEFÍCIOS E MENSAGEM ANGOLA */}
+        {/* COLUNA ESQUERDA: MARCA, SLOGAN, BENEFÍCIOS */}
         <section className="w-full lg:w-[52%] flex flex-col justify-between lg:min-h-[540px]">
           <div className="pt-2 lg:pt-4">
-            {/* Marca Oficial NEUROEDUCA */}
             <div className="flex items-center gap-4">
               <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-white border border-[#cde6d5] shadow-sm p-2 flex items-center justify-center shrink-0">
                 <img
@@ -427,7 +407,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               </div>
             </div>
 
-            {/* Slogan Principal em Itálico + Sublinhado Curvo */}
             <div className="mt-7 sm:mt-9 max-w-xl">
               <h1 className="font-display text-2xl sm:text-3xl lg:text-[36px] font-extrabold italic leading-[1.18] text-[#05612c] text-balance">
                 {isPt ? (
@@ -445,7 +424,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 )}
               </h1>
 
-              {/* Sublinhado curvo verde */}
               <svg viewBox="0 0 280 18" className="w-56 sm:w-64 h-3.5 mt-1.5" fill="none" aria-hidden="true">
                 <path
                   d="M4 13 C85 3 195 3 274 11"
@@ -456,13 +434,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               </svg>
             </div>
 
-            {/* Lista de 4 Benefícios com Check Verde Circular */}
             <ul className="mt-5 sm:mt-6 space-y-3 max-w-md">
               {[
                 isPt ? 'Gestão Académica Eficiente' : 'Efficient Academic Management',
                 isPt ? 'Controlo Financeiro Inteligente' : 'Smart Financial Control',
                 isPt ? 'Relatórios em Tempo Real' : 'Real-Time Reports',
-                isPt ? 'Acesso Seguro e Personalizado' : 'Secure & Personalized Access'
+                isPt ? 'Sincronização Permanente Supabase' : 'Permanent Supabase Cloud Sync'
               ].map((item) => (
                 <li key={item} className="flex items-center gap-3">
                   <span className="w-6 h-6 rounded-full bg-[#16a34a] text-white flex items-center justify-center shrink-0 shadow-xs">
@@ -476,10 +453,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             </ul>
           </div>
 
-          {/* Assinatura Juntos pela Educação em Angola (Desktop sobre faixa verde / Mobile cartão verde) */}
           <div className="mt-8 lg:mt-10">
             <div className="inline-flex items-center gap-3.5 px-4 py-3 lg:px-0 lg:py-0 rounded-2xl bg-[#077936] lg:bg-transparent text-white shadow-sm lg:shadow-none">
-              {/* Ícone 3 Pessoas Branco */}
               <div className="flex items-center -space-x-1 shrink-0">
                 <svg viewBox="0 0 64 44" className="w-11 h-8 text-white" fill="currentColor" aria-hidden="true">
                   <circle cx="15" cy="14" r="6" opacity="0.92" />
@@ -518,24 +493,33 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         {/* COLUNA DIREITA: CARTÃO FLUTUANTE BRANCO DE INÍCIO DE SESSÃO */}
         <section className="w-full max-w-[445px] lg:ml-auto">
           <div className="bg-white rounded-[26px] border border-[#dce7df] shadow-[0_20px_55px_rgba(2,44,22,0.14)] p-6 sm:p-8">
-            {/* Ícone Circular Cadeado Verde no Topo */}
             <div className="flex justify-center">
               <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#06823b] to-[#16a34a] text-white shadow-[0_8px_20px_rgba(6,130,59,0.28)] flex items-center justify-center">
-                <Lock className="w-8 h-8" />
+                {bootstrapRequired ? <Sparkles className="w-8 h-8" /> : <Lock className="w-8 h-8" />}
               </div>
             </div>
 
-            {/* Título & Subtítulo */}
             <div className="text-center mt-4 mb-5">
               <h2 className="font-display text-2xl sm:text-[28px] font-extrabold text-[#0b2316] tracking-tight">
-                {isPt ? 'Iniciar Sessão' : 'Sign In'}
+                {bootstrapRequired
+                  ? isPt
+                    ? 'Configuração Inicial'
+                    : 'Initial Setup'
+                  : isPt
+                  ? 'Iniciar Sessão'
+                  : 'Sign In'}
               </h2>
               <p className="text-xs sm:text-sm text-[#4b6755] mt-1">
-                {isPt ? 'Acesse o seu painel de gestão' : 'Access your management dashboard'}
+                {bootstrapRequired
+                  ? isPt
+                    ? 'Crie a primeira conta Super Administrador na base Supabase'
+                    : 'Create the first Super Admin account on Supabase'
+                  : isPt
+                  ? 'Acesse o seu painel de gestão na nuvem'
+                  : 'Access your cloud management dashboard'}
               </p>
             </div>
 
-            {/* Mensagens de Erro / Sucesso */}
             {errorMsg && (
               <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -550,8 +534,45 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               </div>
             )}
 
-            {/* FORMULÁRIO DE LOGIN */}
-            <form onSubmit={handleLoginSubmit} className="space-y-3.5">
+            {bootstrapRequired ? (
+              <form onSubmit={handleBootstrapSubmit} className="space-y-3.5">
+                <div className="p-3 bg-[#f7fbf8] border border-[#cde6d5] rounded-xl text-[11px] text-[#055827]">
+                  Nenhuma conta registada ainda neste projecto Supabase. Crie o Super Administrador inicial abaixo.
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={bootstrapName}
+                  onChange={(e) => setBootstrapName(e.target.value)}
+                  placeholder="Nome Completo do Super Administrador"
+                  className="w-full min-h-[46px] bg-white text-[#0b2316] placeholder:text-[#6e8577] rounded-xl px-3.5 py-2.5 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
+                />
+                <input
+                  type="email"
+                  required
+                  value={bootstrapEmail}
+                  onChange={(e) => setBootstrapEmail(e.target.value)}
+                  placeholder="E-mail do Super Administrador"
+                  className="w-full min-h-[46px] bg-white text-[#0b2316] placeholder:text-[#6e8577] rounded-xl px-3.5 py-2.5 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
+                />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={bootstrapPassword}
+                  onChange={(e) => setBootstrapPassword(e.target.value)}
+                  placeholder="Palavra-passe"
+                  className="w-full min-h-[46px] bg-white text-[#0b2316] placeholder:text-[#6e8577] rounded-xl px-3.5 py-2.5 text-sm border border-[#cde6d5] focus:border-[#067836] focus:ring-4 focus:ring-[#16a34a]/15 focus:outline-none transition"
+                />
+                <button
+                  type="submit"
+                  disabled={isAuthenticating}
+                  className="w-full min-h-[48px] py-2.5 px-5 bg-gradient-to-r from-[#06823b] to-[#159b48] hover:from-[#056b30] hover:to-[#11833c] disabled:opacity-60 text-white font-bold text-base rounded-xl shadow-[0_6px_18px_rgba(6,120,54,0.28)] transition-all cursor-pointer"
+                >
+                  {isAuthenticating ? 'A criar...' : 'Criar Super Administrador e Entrar'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleLoginSubmit} className="space-y-3.5">
                 <div className="relative">
                   <User className="w-4 h-4 text-[#067836] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -586,20 +607,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between pt-0.5 text-xs">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      id="lembrar-me"
-                      type="checkbox"
-                      checked={rememberMe}
-                      onChange={(e) => setRememberMe(e.target.checked)}
-                      className="w-4 h-4 rounded border-[#cde6d5] accent-[#067836] cursor-pointer"
-                    />
-                    <span className="text-[#1a3324] font-medium">
-                      {isPt ? 'Lembrar-me' : 'Remember me'}
-                    </span>
-                  </label>
-
+                <div className="flex items-center justify-end pt-0.5 text-xs">
                   <button
                     type="button"
                     onClick={() => setShowForgotModal(true)}
@@ -618,15 +626,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   <span>
                     {isAuthenticating
                       ? isPt
-                        ? 'A verificar...'
-                        : 'Verifying...'
+                        ? 'A verificar no Supabase...'
+                        : 'Verifying on Supabase...'
                       : isPt
                       ? 'Entrar'
                       : 'Sign In'}
                   </span>
                 </button>
 
-                {/* Fallback exibido apenas se nenhuma ligação Supabase estiver configurada ainda */}
                 {showCloudConfigBox && (
                   <div className="mt-3 p-3.5 bg-[#f7fbf8] border border-[#cde6d5] rounded-xl space-y-2.5 text-xs">
                     <div className="flex items-center justify-between">
@@ -666,25 +673,24 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   </div>
                 )}
               </form>
+            )}
 
-            {/* FAIXA DE SEGURANÇA DENTRO DO CARTÃO */}
             <div className="mt-5 bg-[#e7f6ec] border border-[#cde6d5] text-[#055827] rounded-xl py-2.5 px-3 flex items-center justify-center gap-2 text-xs font-semibold">
               <ShieldCheck className="w-4 h-4 text-[#067836] shrink-0" />
               <span>
                 {isCloudReady
                   ? isPt
-                    ? 'Ligação Permanente Activa · Dados Protegidos'
-                    : 'Permanent Cloud Link Active · Protected Data'
+                    ? 'Ligação Permanente Supabase Activa · Dados na Nuvem'
+                    : 'Permanent Supabase Cloud Active · Cloud Data'
                   : isPt
-                  ? 'Sistema Seguro · Dados Protegidos'
-                  : 'Secure System · Protected Data'}
+                  ? 'Sistema Seguro · Autenticação Supabase'
+                  : 'Secure System · Supabase Auth'}
               </span>
             </div>
           </div>
         </section>
       </main>
 
-      {/* RODAPÉ INSTITUCIONAL VERDE ESCURO */}
       <footer className="relative z-10 w-full bg-[#004e23] text-white/95 border-t border-[#067836]/40">
         <div className="max-w-7xl mx-auto px-5 sm:px-8 py-2.5 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-center sm:text-left">
@@ -699,7 +705,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           </div>
 
           <div className="flex items-center gap-2 text-white/90 shrink-0">
-            {/* Bandeira de Angola SVG */}
             <svg viewBox="0 0 24 16" className="w-5 h-3.5 rounded-[2px] shadow-2xs shrink-0" aria-label="Angola">
               <rect width="24" height="8" y="0" fill="#cc092f" />
               <rect width="24" height="8" y="8" fill="#111111" />
@@ -715,7 +720,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         </div>
       </footer>
 
-      {/* MODAL RECUPERAÇÃO DE PALAVRA-PASSE */}
       {showForgotModal && (
         <div className="fixed inset-0 z-50 bg-[#022c16]/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl overflow-hidden max-w-sm w-full text-[#0b2316] shadow-2xl border border-[#dce7df]">

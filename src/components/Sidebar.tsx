@@ -32,7 +32,8 @@ import {
   FolderArchive,
   Headphones,
   Megaphone,
-  HeartHandshake
+  HeartHandshake,
+  ListChecks
 } from 'lucide-react';
 import { Institution, UserRole, UserProfile } from '../types';
 
@@ -553,6 +554,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
 
               <button
+                onClick={() => handleTabClick('class_lists')}
+                className={navItemClass(currentTab === 'class_lists')}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <ListChecks className={iconClass(currentTab === 'class_lists')} />
+                  <span className="truncate">Listas</span>
+                </div>
+              </button>
+
+              <button
                 onClick={() => handleTabClick('teachers')}
                 className={navItemClass(currentTab === 'teachers')}
               >
@@ -755,7 +766,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   }
                 }}
                 className="flex-1 min-h-[34px] flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold transition cursor-pointer"
-                title="Backup & Memória Localhost"
+                title="Backup JSON & Nuvem Supabase"
               >
                 <HardDrive className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate">Backup</span>

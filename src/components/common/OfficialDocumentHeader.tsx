@@ -2,6 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * NEUROEDUCA - Cabeçalho Oficial Centralizado e Editável para Todos os Documentos
+ * Baseado directamente nos dados da Instituição sincronizados com o Supabase (zero localStorage).
  */
 
 import React, { useState, useEffect } from 'react';
@@ -149,11 +150,11 @@ export function buildDocumentHeaderForInstitution(
 
 export const DEFAULT_DOCUMENT_HEADER: DocumentHeaderConfig = buildDocumentHeaderForInstitution(null);
 
-const HEADER_STORAGE_PREFIX = 'neuroeduca_doc_header_v1_';
 const HEADER_EVENT_NAME = 'neuroeduca-document-header-updated';
+const inMemoryHeaderOverrides = new Map<string, DocumentHeaderConfig>();
 
-function getStorageKey(institutionId?: string): string {
-  return `${HEADER_STORAGE_PREFIX}${institutionId || 'default'}`;
+function getHeaderCacheKey(institutionId?: string): string {
+  return institutionId || 'default';
 }
 
 export function loadDocumentHeaderConfig(
@@ -165,46 +166,49 @@ export function loadDocumentHeaderConfig(
     typeof institutionOrId === 'string' ? institutionOrId : institution?.id;
 
   const schoolDefaults = buildDocumentHeaderForInstitution(institution);
-  if (typeof window === 'undefined') return schoolDefaults;
-
-  try {
-    const raw = localStorage.getItem(getStorageKey(institutionId));
-    if (!raw) return schoolDefaults;
-    const parsed = JSON.parse(raw) as Partial<DocumentHeaderConfig>;
-    if (!parsed.isCustomized) {
-      return schoolDefaults;
-    }
+  const override = inMemoryHeaderOverrides.get(getHeaderCacheKey(institutionId));
+  if (override) {
+    if (!override.isCustomized) return schoolDefaults;
     return {
-      line1: parsed.line1 ?? schoolDefaults.line1,
-      line2: parsed.line2 ?? schoolDefaults.line2,
-      line3: parsed.line3 ?? schoolDefaults.line3,
-      line4: parsed.line4 ?? schoolDefaults.line4,
-      line5: parsed.line5 ?? schoolDefaults.line5,
+      line1: override.line1 || schoolDefaults.line1,
+      line2: override.line2 || schoolDefaults.line2,
+      line3: override.line3 || schoolDefaults.line3,
+      line4: override.line4 || schoolDefaults.line4,
+      line5: override.line5 || schoolDefaults.line5,
       isCustomized: true
     };
-  } catch {
-    return schoolDefaults;
   }
+
+  if (institution?.documentHeader?.isCustomized) {
+    return {
+      line1: institution.documentHeader.line1 || schoolDefaults.line1,
+      line2: institution.documentHeader.line2 || schoolDefaults.line2,
+      line3: institution.documentHeader.line3 || schoolDefaults.line3,
+      line4: institution.documentHeader.line4 || schoolDefaults.line4,
+      line5: institution.documentHeader.line5 || schoolDefaults.line5,
+      isCustomized: true
+    };
+  }
+
+  return schoolDefaults;
 }
 
 export function saveDocumentHeaderConfig(
   institutionId: string | undefined,
   config: DocumentHeaderConfig
 ): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (!config.isCustomized) {
-      localStorage.removeItem(getStorageKey(institutionId));
-    } else {
-      localStorage.setItem(getStorageKey(institutionId), JSON.stringify(config));
-    }
+  const key = getHeaderCacheKey(institutionId);
+  if (!config.isCustomized) {
+    inMemoryHeaderOverrides.delete(key);
+  } else {
+    inMemoryHeaderOverrides.set(key, config);
+  }
+  if (typeof window !== 'undefined') {
     window.dispatchEvent(
       new CustomEvent(HEADER_EVENT_NAME, {
-        detail: { institutionId: institutionId || 'default', config }
+        detail: { institutionId: key, config }
       })
     );
-  } catch {
-    // Ignorar falha de armazenamento
   }
 }
 
@@ -214,6 +218,7 @@ interface OfficialDocumentHeaderProps {
   insigniaClassName?: string;
   extraMeta?: React.ReactNode;
   className?: string;
+  onSaveHeader?: (config: DocumentHeaderConfig) => void;
 }
 
 export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
@@ -221,7 +226,8 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
   editable = true,
   insigniaClassName = 'h-14 w-auto mx-auto object-contain',
   extraMeta,
-  className = ''
+  className = '',
+  onSaveHeader
 }) => {
   const instKey = institution?.id || 'default';
   const [header, setHeader] = useState<DocumentHeaderConfig>(() =>
@@ -233,6 +239,9 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
   const subsystemsSig = Array.isArray(institution?.subsystems)
     ? institution.subsystems.join(',')
     : '';
+  const customSig = institution?.documentHeader
+    ? JSON.stringify(institution.documentHeader)
+    : '';
 
   useEffect(() => {
     const loaded = loadDocumentHeaderConfig(institution);
@@ -243,7 +252,8 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
     institution?.name,
     institution?.province,
     institution?.municipality,
-    subsystemsSig
+    subsystemsSig,
+    customSig
   ]);
 
   useEffect(() => {
@@ -290,6 +300,7 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
     setHeader(cleaned);
     setDraft(cleaned);
     saveDocumentHeaderConfig(instKey, cleaned);
+    onSaveHeader?.(cleaned);
     setIsEditing(false);
   };
 
@@ -298,6 +309,7 @@ export const OfficialDocumentHeader: React.FC<OfficialDocumentHeaderProps> = ({
     setDraft(freshDefaults);
     setHeader(freshDefaults);
     saveDocumentHeaderConfig(instKey, freshDefaults);
+    onSaveHeader?.(freshDefaults);
   };
 
   return (

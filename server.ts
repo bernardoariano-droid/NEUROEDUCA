@@ -1,7 +1,7 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * NEUROEDUCA - Servidor Full-Stack Express & API Gemini para Angola
+ * NEUROEDUCA - Servidor Full-Stack Express, Autenticação via Cookie Seguro & API Gemini
  */
 
 import express, { Request, Response } from 'express';
@@ -19,6 +19,8 @@ import {
   normalizeSupabaseUrl,
   pullBundleFromSupabase,
   pushBundleToSupabase,
+  SupabaseMutationBatch,
+  syncChangesToSupabase,
   uploadArchiveDocumentToStorage
 } from './src/lib/supabaseSyncCore';
 
@@ -28,6 +30,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = 3000;
 
 app.use(express.json({ limit: '25mb' }));
@@ -48,29 +51,99 @@ if (apiKey) {
 }
 
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+const SESSION_COOKIE_NAME = 'ne_session';
+const SESSION_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
 
-// Arquivo de persistência local (no Vercel usa /tmp pois o sistema de ficheiros principal é read-only)
-const DATA_FILE = IS_VERCEL
-  ? path.join(os.tmpdir(), '.neuroeduca_store.json')
-  : path.join(__dirname, '.neuroeduca_store.json');
-
-function readStore() {
-  if (fs.existsSync(DATA_FILE)) {
-    try {
-      const content = fs.readFileSync(DATA_FILE, 'utf-8');
-      return JSON.parse(content);
-    } catch {
-      return {};
-    }
-  }
-  return {};
+interface ServerSupabaseRuntimeConfig {
+  url: string;
+  anonKey: string;
+  autoSync: boolean;
+  updatedAt: string;
 }
 
-function writeStore(data: any) {
+// Configuração opcional em memória (fallback caso não esteja em process.env)
+let runtimeServerSupabaseConfig: ServerSupabaseRuntimeConfig | null = null;
+
+function parseCookies(req: Request): Record<string, string> {
+  const raw = String(req.headers.cookie || '');
+  const out: Record<string, string> = {};
+  if (!raw) return out;
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const name = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (name) {
+      try {
+        out[name] = decodeURIComponent(val);
+      } catch {
+        out[name] = val;
+      }
+    }
+  }
+  return out;
+}
+
+interface SessionCookiePayload {
+  sessionToken?: string;
+  accessToken?: string;
+}
+
+function readSessionCookie(req: Request): SessionCookiePayload | null {
+  const cookies = parseCookies(req);
+  const raw = cookies[SESSION_COOKIE_NAME];
+  if (!raw) return null;
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Erro ao salvar persistência:', err);
+    const jsonStr = Buffer.from(raw, 'base64url').toString('utf-8');
+    const parsed = JSON.parse(jsonStr) as SessionCookiePayload;
+    if (!parsed || (!parsed.sessionToken && !parsed.accessToken)) return null;
+    return {
+      sessionToken: parsed.sessionToken ? String(parsed.sessionToken).trim() : undefined,
+      accessToken: parsed.accessToken ? String(parsed.accessToken).trim() : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildCookieAttributes(req: Request, maxAgeSeconds: number): string[] {
+  const host = String(req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+  const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+  const isHttps = req.secure || req.get('x-forwarded-proto') === 'https';
+
+  const attrs = ['Path=/', 'HttpOnly', `Max-Age=${maxAgeSeconds}`];
+  if (isHttps || isLocal) {
+    attrs.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    attrs.push('SameSite=Lax');
+  }
+  return attrs;
+}
+
+function setSessionCookie(req: Request, res: Response, tokens: SessionCookiePayload): void {
+  const encoded = Buffer.from(JSON.stringify(tokens), 'utf-8').toString('base64url');
+  const attrs = buildCookieAttributes(req, SESSION_COOKIE_MAX_AGE_SEC);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=${encoded}; ${attrs.join('; ')}`);
+}
+
+function clearSessionCookie(req: Request, res: Response): void {
+  const attrs = buildCookieAttributes(req, 0);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=; ${attrs.join('; ')}`);
+}
+
+function isValidMutationOrigin(req: Request): boolean {
+  const customHeader = String(req.headers['x-requested-with'] || '');
+  if (customHeader !== 'NEUROEDUCA') {
+    return false;
+  }
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    const originHost = new URL(origin).host.toLowerCase();
+    const requestHost = String(req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+    return Boolean(originHost && requestHost && originHost === requestHost);
+  } catch {
+    return false;
   }
 }
 
@@ -79,12 +152,12 @@ function writeStore(data: any) {
 // ==========================================
 
 // Status e Configurações
-app.get('/api/health', (req: Request, res: Response) => {
+app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'online',
     platform: 'NEUROEDUCA - Angola',
     geminiEnabled: Boolean(apiKey),
-    localStoreExists: fs.existsSync(DATA_FILE),
+    persistenceMode: 'supabase_only',
     timestamp: new Date().toISOString(),
   });
 });
@@ -136,7 +209,7 @@ app.get('/api/insignia', async (_req: Request, res: Response) => {
   return res.status(404).end();
 });
 
-// Diretório de armazenamento de ficheiros do Arquivo Digital Escolar
+// Diretório temporário de ficheiros (usado apenas como fallback caso o bucket Supabase Storage não esteja acessível)
 const ARCHIVE_DIR = IS_VERCEL
   ? path.join(os.tmpdir(), '.neuroeduca_archive')
   : path.join(__dirname, '.neuroeduca_archive');
@@ -175,65 +248,25 @@ function escapeXml(str: string): string {
     .replace(/"/g, '&quot;');
 }
 
-// Sincronização e Persistência de Dados (Memória Localhost em .neuroeduca_store.json)
-app.get('/api/sync', (req: Request, res: Response) => {
-  const store = readStore();
-  res.json({
-    ...store,
-    serverStored: fs.existsSync(DATA_FILE),
-  });
-});
-
-app.post('/api/sync', (req: Request, res: Response) => {
-  const existing = readStore();
-  const incoming = req.body || {};
-  const merged = {
-    ...existing,
-    ...incoming,
-    updatedAt: new Date().toISOString(),
-  };
-  writeStore(merged);
-  res.json({ success: true, savedAt: merged.updatedAt });
-});
-
 // ==========================================
 // INTEGRAÇÃO SEGURA COM SUPABASE POSTGRESQL
 // ==========================================
 
-function getSavedServerSupabaseConfig(): {
-  url: string;
-  anonKey: string;
-  autoSync: boolean;
-} | null {
-  const store = readStore();
-  const cfg = store?.supabaseConfig;
-  if (!cfg?.url || !cfg?.anonKey) return null;
-  try {
-    return {
-      url: normalizeSupabaseUrl(String(cfg.url)),
-      anonKey: String(cfg.anonKey).trim(),
-      autoSync: cfg.autoSync !== false,
-    };
-  } catch {
-    return null;
-  }
+function getSavedServerSupabaseConfig(): ServerSupabaseRuntimeConfig | null {
+  return runtimeServerSupabaseConfig;
 }
 
 function persistServerSupabaseConfig(url: string, anonKey: string, autoSync = true) {
   const normalizedUrl = normalizeSupabaseUrl(url);
   const cleanKey = String(anonKey || '').trim();
   if (!normalizedUrl || !cleanKey) return null;
-  const store = readStore();
-  const nextConfig = {
+  const nextConfig: ServerSupabaseRuntimeConfig = {
     url: normalizedUrl,
     anonKey: cleanKey,
     autoSync: Boolean(autoSync),
     updatedAt: new Date().toISOString(),
   };
-  writeStore({
-    ...store,
-    supabaseConfig: nextConfig,
-  });
+  runtimeServerSupabaseConfig = nextConfig;
   return nextConfig;
 }
 
@@ -265,9 +298,23 @@ function resolveSupabaseCredentials(body?: { url?: string; anonKey?: string }) {
 
 function extractBearerToken(req?: Request): string | undefined {
   const auth = String(req?.headers?.authorization || '').trim();
-  if (!auth.toLowerCase().startsWith('bearer ')) return undefined;
-  const token = auth.slice(7).trim();
-  return token || undefined;
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    const token = auth.slice(7).trim();
+    if (token) return token;
+  }
+  if (req) {
+    return readSessionCookie(req)?.accessToken;
+  }
+  return undefined;
+}
+
+function extractSessionToken(req?: Request): string | undefined {
+  const headerToken = String(req?.headers?.['x-ne-session'] || '').trim();
+  if (headerToken) return headerToken;
+  if (req) {
+    return readSessionCookie(req)?.sessionToken;
+  }
+  return undefined;
 }
 
 function createServerSupabaseClient(
@@ -277,8 +324,152 @@ function createServerSupabaseClient(
   if (creds.serviceRoleKey) {
     return createValidatedSupabaseClient(creds.url, creds.serviceRoleKey);
   }
-  return createValidatedSupabaseClient(creds.url, creds.anonKey, extractBearerToken(req));
+  return createValidatedSupabaseClient(creds.url, creds.anonKey, {
+    accessToken: extractBearerToken(req),
+    sessionToken: extractSessionToken(req),
+  });
 }
+
+async function resolveAuthenticatedSessionFromTokens(
+  creds: { url: string; anonKey: string; serviceRoleKey?: string },
+  tokens: SessionCookiePayload
+): Promise<{ authenticated: boolean; account?: any }> {
+  if (tokens.sessionToken) {
+    const sessionClient = createValidatedSupabaseClient(creds.url, creds.anonKey, {
+      sessionToken: tokens.sessionToken,
+      accessToken: tokens.accessToken,
+    });
+    const { data, error } = await sessionClient.rpc('get_neuroeduca_session_profile');
+    if (!error && data && (data as any).authenticated && (data as any).account) {
+      return { authenticated: true, account: (data as any).account };
+    }
+  }
+
+  if (tokens.accessToken) {
+    const authClient = createValidatedSupabaseClient(creds.url, creds.anonKey, {
+      accessToken: tokens.accessToken,
+    });
+    const { data: userData, error: userErr } = await authClient.auth.getUser(tokens.accessToken);
+    if (!userErr && userData?.user?.email) {
+      const cleanEmail = userData.user.email.toLowerCase();
+      const { data: accountRow } = await authClient
+        .from('neuroeduca_accounts')
+        .select('email, full_name, role, institution_id, municipality, province, status, payload')
+        .eq('id', cleanEmail)
+        .maybeSingle();
+
+      const payload = (accountRow?.payload || {}) as Record<string, any>;
+      const status = String(accountRow?.status || payload.status || 'activo');
+      if (status === 'inactivo') {
+        return { authenticated: false };
+      }
+
+      const meta = (userData.user.user_metadata || {}) as Record<string, any>;
+      return {
+        authenticated: true,
+        account: {
+          email: accountRow?.email || cleanEmail,
+          fullName:
+            accountRow?.full_name || payload.fullName || meta.full_name || meta.fullName || cleanEmail,
+          role: accountRow?.role || payload.role || meta.role || 'director_geral',
+          institutionId: accountRow?.institution_id || payload.institutionId || meta.institution_id || undefined,
+          institutionName: payload.institutionName || undefined,
+          municipality: accountRow?.municipality || payload.municipality || meta.municipality || undefined,
+          province: accountRow?.province || payload.province || meta.province || undefined,
+          status: 'activo',
+        },
+      };
+    }
+  }
+
+  return { authenticated: false };
+}
+
+// Endpoints de Sessão Persistente em Cookie HttpOnly Validado pelo Supabase
+app.post('/api/session', async (req: Request, res: Response) => {
+  if (!isValidMutationOrigin(req)) {
+    return res.status(403).json({ ok: false, message: 'Origem de pedido não autorizada.' });
+  }
+
+  const sessionToken = req.body?.sessionToken ? String(req.body.sessionToken).trim() : undefined;
+  const accessToken = req.body?.accessToken ? String(req.body.accessToken).trim() : undefined;
+  if (!sessionToken && !accessToken) {
+    return res.status(400).json({ ok: false, message: 'Token de sessão em falta.' });
+  }
+
+  try {
+    const creds = resolveSupabaseCredentials(req.body);
+    if (!creds.configured) {
+      return res.status(503).json({ ok: false, message: 'Supabase não configurado.' });
+    }
+
+    const verified = await resolveAuthenticatedSessionFromTokens(creds, {
+      sessionToken,
+      accessToken,
+    });
+    if (!verified.authenticated) {
+      return res.status(401).json({ ok: false, message: 'Sessão inválida ou expirada.' });
+    }
+
+    setSessionCookie(req, res, { sessionToken, accessToken });
+    return res.json({ ok: true });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || 'Erro ao validar sessão.' });
+  }
+});
+
+app.get('/api/session/me', async (req: Request, res: Response) => {
+  const cookieTokens = readSessionCookie(req);
+  if (!cookieTokens) {
+    return res.json({ authenticated: false });
+  }
+
+  try {
+    const creds = resolveSupabaseCredentials();
+    if (!creds.configured) {
+      return res.json({ authenticated: false });
+    }
+
+    const verified = await resolveAuthenticatedSessionFromTokens(creds, cookieTokens);
+    if (!verified.authenticated || !verified.account) {
+      clearSessionCookie(req, res);
+      return res.json({ authenticated: false });
+    }
+
+    return res.json({
+      authenticated: true,
+      account: verified.account,
+      ...(cookieTokens.sessionToken ? { sessionToken: cookieTokens.sessionToken } : {}),
+      ...(cookieTokens.accessToken ? { accessToken: cookieTokens.accessToken } : {}),
+    });
+  } catch {
+    return res.json({ authenticated: false });
+  }
+});
+
+app.post('/api/session/logout', async (req: Request, res: Response) => {
+  if (!isValidMutationOrigin(req)) {
+    return res.status(403).json({ ok: false, message: 'Origem de pedido não autorizada.' });
+  }
+
+  const logoutToken = extractSessionToken(req);
+  if (logoutToken) {
+    try {
+      const creds = resolveSupabaseCredentials(req.body);
+      if (creds.configured) {
+        const client = createValidatedSupabaseClient(creds.url, creds.anonKey, {
+          sessionToken: logoutToken,
+        });
+        await client.rpc('logout_neuroeduca_session', { p_token: logoutToken });
+      }
+    } catch {
+      // Prossegue remoção do cookie
+    }
+  }
+
+  clearSessionCookie(req, res);
+  return res.json({ ok: true });
+});
 
 app.get('/api/supabase/status', (_req: Request, res: Response) => {
   try {
@@ -325,6 +516,67 @@ app.get('/api/supabase/status', (_req: Request, res: Response) => {
       publicUrl: '',
       publicAnonKey: '',
       error: err?.message || 'Configuração Supabase inválida no servidor.',
+    });
+  }
+});
+
+app.get('/api/supabase/bootstrap-status', async (_req: Request, res: Response) => {
+  try {
+    const creds = resolveSupabaseCredentials();
+    if (!creds.configured) {
+      return res.json({ hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true });
+    }
+    const anonClient = createValidatedSupabaseClient(creds.url, creds.anonKey);
+    const { data, error } = await anonClient.rpc('check_neuroeduca_bootstrap_status');
+    if (error || !data) {
+      return res.json({ hasAccounts: true, bootstrapRequired: false });
+    }
+    return res.json({
+      hasAccounts: Boolean((data as any).hasAccounts),
+      bootstrapRequired: Boolean((data as any).bootstrapRequired),
+    });
+  } catch {
+    return res.json({ hasAccounts: true, bootstrapRequired: false });
+  }
+});
+
+app.post('/api/supabase/bootstrap-super-admin', async (req: Request, res: Response) => {
+  if (!isValidMutationOrigin(req)) {
+    return res.status(403).json({ authenticated: false, error: 'Origem não autorizada.' });
+  }
+
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const fullName = String(req.body?.fullName || '').trim();
+    const password = String(req.body?.password || '').trim();
+    if (!email || !fullName || !password) {
+      return res.status(400).json({ authenticated: false, error: 'Dados obrigatórios em falta.' });
+    }
+
+    const creds = resolveSupabaseCredentials();
+    if (!creds.configured) {
+      return res.status(503).json({ authenticated: false, error: 'Supabase não configurado.' });
+    }
+
+    const anonClient = createValidatedSupabaseClient(creds.url, creds.anonKey);
+    const { data, error } = await anonClient.rpc('bootstrap_neuroeduca_super_admin', {
+      p_email: email,
+      p_full_name: fullName,
+      p_password: password,
+    });
+    if (error) {
+      return res.status(400).json({ authenticated: false, error: error.message });
+    }
+
+    const resultObj = (data || {}) as { authenticated?: boolean; sessionToken?: string };
+    if (resultObj.authenticated && resultObj.sessionToken) {
+      setSessionCookie(req, res, { sessionToken: resultObj.sessionToken });
+    }
+    return res.json(resultObj);
+  } catch (err: any) {
+    return res.status(500).json({
+      authenticated: false,
+      error: err?.message || 'Erro ao criar Super Administrador inicial.',
     });
   }
 });
@@ -378,20 +630,71 @@ app.post('/api/supabase/test', async (req: Request, res: Response) => {
     const health = await checkSupabaseTablesHealth(
       creds.url,
       creds.serviceRoleKey || creds.anonKey,
-      creds.serviceRoleKey ? undefined : extractBearerToken(req)
+      creds.serviceRoleKey
+        ? undefined
+        : {
+            accessToken: extractBearerToken(req),
+            sessionToken: extractSessionToken(req),
+          }
     );
     if (health.success && req.body?.url && req.body?.anonKey) {
-      try {
-        persistServerSupabaseConfig(creds.url, creds.anonKey, true);
-      } catch {
-        // Ignora erro ao persistir em ambiente read-only
-      }
+      persistServerSupabaseConfig(creds.url, creds.anonKey, true);
     }
     return res.json(health);
   } catch (err: any) {
     return res.status(400).json({
       success: false,
       message: err?.message || 'Erro ao validar ligação ao Supabase.',
+    });
+  }
+});
+
+app.post('/api/supabase/mutate', async (req: Request, res: Response) => {
+  if (!isValidMutationOrigin(req)) {
+    return res.status(403).json({
+      success: false,
+      syncedCount: 0,
+      deletedCount: 0,
+      errors: ['Origem de pedido não autorizada.'],
+      syncedAt: new Date().toISOString(),
+    });
+  }
+
+  try {
+    const creds = resolveSupabaseCredentials(req.body);
+    if (!creds.configured) {
+      return res.status(400).json({
+        success: false,
+        syncedCount: 0,
+        deletedCount: 0,
+        errors: ['Supabase não configurado.'],
+        syncedAt: new Date().toISOString(),
+      });
+    }
+
+    const sessionToken = extractSessionToken(req);
+    const accessToken = extractBearerToken(req);
+    if (!sessionToken && !accessToken) {
+      return res.status(401).json({
+        success: false,
+        syncedCount: 0,
+        deletedCount: 0,
+        errors: ['Sessão autenticada obrigatória para gravar no Supabase.'],
+        syncedAt: new Date().toISOString(),
+      });
+    }
+
+    const batch = (req.body || {}) as SupabaseMutationBatch;
+    const client = createServerSupabaseClient(creds, req);
+    const result = await syncChangesToSupabase(client, batch);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      syncedCount: 0,
+      deletedCount: 0,
+      errors: [err?.message || 'Erro ao sincronizar alterações com o Supabase.'],
+      syncedAt: new Date().toISOString(),
     });
   }
 });
@@ -403,6 +706,7 @@ app.post('/api/supabase/push', async (req: Request, res: Response) => {
       return res.status(400).json({
         success: false,
         syncedCount: 0,
+        deletedCount: 0,
         tableCounts: {},
         missingTables: [],
         errors: ['Supabase não configurado. Configure o URL e a Chave Pública primeiro.'],
@@ -411,33 +715,33 @@ app.post('/api/supabase/push', async (req: Request, res: Response) => {
     }
 
     if (req.body?.url && req.body?.anonKey) {
-      try {
-        persistServerSupabaseConfig(creds.url, creds.anonKey, true);
-      } catch {
-        // Ignora erro ao persistir em ambiente read-only
-      }
+      persistServerSupabaseConfig(creds.url, creds.anonKey, true);
     }
 
-    const store = readStore();
-    const bundle = req.body?.bundle || store;
-    const client = createServerSupabaseClient(creds, req);
-    const result = await pushBundleToSupabase(client, bundle);
-
-    if (result.success) {
-      const latestStore = readStore();
-      writeStore({
-        ...latestStore,
-        ...(req.body?.bundle || {}),
-        cloudLastSyncAt: result.syncedAt,
-        updatedAt: latestStore.updatedAt || result.syncedAt,
+    const bundle = req.body?.bundle;
+    if (!bundle || typeof bundle !== 'object') {
+      return res.status(400).json({
+        success: false,
+        syncedCount: 0,
+        deletedCount: 0,
+        tableCounts: {},
+        missingTables: [],
+        errors: ['Bundle de dados em falta para envio ao Supabase.'],
+        syncedAt: new Date().toISOString(),
       });
     }
+
+    const client = createServerSupabaseClient(creds, req);
+    const result = await pushBundleToSupabase(client, bundle, {
+      pruneMissing: Boolean(req.body?.pruneMissing),
+    });
 
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({
       success: false,
       syncedCount: 0,
+      deletedCount: 0,
       tableCounts: {},
       missingTables: [],
       errors: [err?.message || 'Erro ao enviar dados para o Supabase.'],
@@ -463,17 +767,6 @@ app.post('/api/supabase/pull', async (req: Request, res: Response) => {
 
     const client = createServerSupabaseClient(creds, req);
     const result = await pullBundleFromSupabase(client);
-
-    if (result.success && result.bundle) {
-      const existing = readStore();
-      writeStore({
-        ...existing,
-        ...result.bundle,
-        cloudLastSyncAt: result.cloudUpdatedAt || result.pulledAt,
-        updatedAt: result.cloudUpdatedAt || result.pulledAt,
-      });
-    }
-
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({
@@ -485,6 +778,31 @@ app.post('/api/supabase/pull', async (req: Request, res: Response) => {
       errors: [err?.message || 'Erro ao importar dados do Supabase.'],
       pulledAt: new Date().toISOString(),
     });
+  }
+});
+
+app.post('/api/supabase/announcement-read', async (req: Request, res: Response) => {
+  if (!isValidMutationOrigin(req)) {
+    return res.status(403).json({ success: false });
+  }
+  try {
+    const announcementId = String(req.body?.announcementId || '').trim();
+    const readKey = String(req.body?.readKey || '').trim();
+    if (!announcementId || !readKey) {
+      return res.status(400).json({ success: false });
+    }
+    const creds = resolveSupabaseCredentials(req.body);
+    if (!creds.configured) {
+      return res.status(400).json({ success: false });
+    }
+    const client = createServerSupabaseClient(creds, req);
+    const { data, error } = await client.rpc('mark_neuroeduca_announcement_read', {
+      p_announcement_id: announcementId,
+      p_read_key: readKey,
+    });
+    return res.json({ success: !error && Boolean(data) });
+  } catch {
+    return res.status(500).json({ success: false });
   }
 });
 
@@ -503,14 +821,19 @@ app.post('/api/supabase/login', async (req: Request, res: Response) => {
 
     const anonClient = createValidatedSupabaseClient(creds.url, creds.anonKey);
 
-    // 1. Verificação segura via RPC verify_neuroeduca_login (nunca expõe passwords via REST)
+    // 1. Verificação segura via RPC verify_neuroeduca_login (emite sessionToken + verifica hash bcrypt)
     const { data: rpcData, error: rpcErr } = await anonClient.rpc('verify_neuroeduca_login', {
       p_email: email,
       p_password: password,
     });
 
     if (!rpcErr && rpcData) {
-      const resultObj = rpcData as { authenticated?: boolean; inactive?: boolean; account?: any };
+      const resultObj = rpcData as {
+        authenticated?: boolean;
+        inactive?: boolean;
+        sessionToken?: string;
+        account?: any;
+      };
       if (resultObj.inactive) {
         return res.json({ authenticated: false, inactive: true });
       }
@@ -520,11 +843,16 @@ app.post('/api/supabase/login', async (req: Request, res: Response) => {
           const { data: authSessionData } = await anonClient.auth.signInWithPassword({ email, password });
           accessToken = authSessionData?.session?.access_token;
         } catch {
-          // Opcional caso o utilizador ainda não esteja em auth.users
+          // Opcional caso o utilizador utilize apenas RPC verify_neuroeduca_login
         }
+        setSessionCookie(req, res, {
+          sessionToken: resultObj.sessionToken,
+          accessToken,
+        });
         return res.json({
           authenticated: true,
           account: resultObj.account,
+          ...(resultObj.sessionToken ? { sessionToken: resultObj.sessionToken } : {}),
           ...(accessToken ? { accessToken } : {}),
         });
       }
@@ -541,7 +869,7 @@ app.post('/api/supabase/login', async (req: Request, res: Response) => {
       const accessToken = authData.session?.access_token;
       const accountReader = creds.serviceRoleKey
         ? createValidatedSupabaseClient(creds.url, creds.serviceRoleKey)
-        : createValidatedSupabaseClient(creds.url, creds.anonKey, accessToken);
+        : createValidatedSupabaseClient(creds.url, creds.anonKey, { accessToken });
 
       const { data: accountRow } = await accountReader
         .from('neuroeduca_accounts')
@@ -549,10 +877,14 @@ app.post('/api/supabase/login', async (req: Request, res: Response) => {
         .eq('id', email)
         .maybeSingle();
 
-      const payload = ((accountRow?.payload || {}) as Record<string, any>);
+      const payload = (accountRow?.payload || {}) as Record<string, any>;
       const status = String(accountRow?.status || payload.status || 'activo');
       if (status === 'inactivo') {
         return res.json({ authenticated: false, inactive: true });
+      }
+
+      if (accessToken) {
+        setSessionCookie(req, res, { accessToken });
       }
 
       const meta = (authData.user.user_metadata || {}) as Record<string, any>;
@@ -579,17 +911,9 @@ app.post('/api/supabase/login', async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Fallback administrativo (apenas com service_role ou se RPC ainda não tiver sido aplicada)
-    const rpcMsg = String(rpcErr?.message || '').toLowerCase();
-    const rpcMissing =
-      rpcErr?.code === 'PGRST202' ||
-      rpcErr?.code === '42883' ||
-      rpcMsg.includes('could not find the function');
-
-    if (creds.serviceRoleKey || rpcMissing) {
-      const reader = creds.serviceRoleKey
-        ? createValidatedSupabaseClient(creds.url, creds.serviceRoleKey)
-        : anonClient;
+    // 3. Fallback administrativo estritamente quando existe SUPABASE_SERVICE_ROLE_KEY no servidor
+    if (creds.serviceRoleKey) {
+      const reader = createValidatedSupabaseClient(creds.url, creds.serviceRoleKey);
       const { data } = await reader
         .from('neuroeduca_accounts')
         .select('email, full_name, role, institution_id, municipality, province, status, payload')
@@ -645,7 +969,7 @@ app.post('/api/supabase/storage/upload', async (req: Request, res: Response) => 
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      error: err?.message || 'Erro ao enviar ficheiro para o Supabase Storage.'
+      error: err?.message || 'Erro ao enviar ficheiro para o Supabase Storage.',
     });
   }
 });
@@ -674,7 +998,7 @@ app.post('/api/supabase/storage/signed-url', async (req: Request, res: Response)
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      error: err?.message || 'Erro ao gerar URL assinado para o documento.'
+      error: err?.message || 'Erro ao gerar URL assinado para o documento.',
     });
   }
 });
@@ -697,12 +1021,12 @@ app.post('/api/supabase/storage/delete', async (req: Request, res: Response) => 
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      error: err?.message || 'Erro ao eliminar ficheiro do Supabase Storage.'
+      error: err?.message || 'Erro ao eliminar ficheiro do Supabase Storage.',
     });
   }
 });
 
-// Upload de ficheiro para o Arquivo Digital Escolar
+// Fallback temporário de ficheiro em disco (sem store JSON) caso o bucket Supabase Storage não esteja pronto
 app.post('/api/archive/upload', (req: Request, res: Response) => {
   try {
     const { document, fileDataBase64 } = req.body || {};
@@ -725,15 +1049,6 @@ app.post('/api/archive/upload', (req: Request, res: Response) => {
       dataUrl: undefined,
     };
 
-    const store = readStore();
-    const currentArchive = Array.isArray(store.digitalArchive) ? store.digitalArchive : [];
-    store.digitalArchive = [
-      savedDoc,
-      ...currentArchive.filter((item: any) => item.id !== savedDoc.id),
-    ];
-    store.updatedAt = new Date().toISOString();
-    writeStore(store);
-
     return res.json({ success: true, document: savedDoc });
   } catch (err: any) {
     console.error('Erro ao guardar ficheiro no Arquivo Digital:', err);
@@ -741,13 +1056,9 @@ app.post('/api/archive/upload', (req: Request, res: Response) => {
   }
 });
 
-// Visualização e Download de ficheiro do Arquivo Digital
 app.get('/api/archive/file/:id', (req: Request, res: Response) => {
   try {
     const safeId = getSafeArchiveId(req.params.id);
-    const store = readStore();
-    const currentArchive = Array.isArray(store.digitalArchive) ? store.digitalArchive : [];
-    const docMeta = currentArchive.find((item: any) => getSafeArchiveId(item.id) === safeId);
 
     if (fs.existsSync(ARCHIVE_DIR)) {
       const files = fs.readdirSync(ARCHIVE_DIR);
@@ -765,35 +1076,25 @@ app.get('/api/archive/file/:id', (req: Request, res: Response) => {
             : ext === '.svg'
             ? 'image/svg+xml'
             : 'image/jpeg';
-        const mimeType = docMeta?.mimeType || fallbackMime;
         const disposition = req.query.download === '1' ? 'attachment' : 'inline';
-        const downloadName = (docMeta?.fileName || match).replace(/"/g, '');
-        res.setHeader('Content-Type', mimeType);
+        const downloadName = match.replace(/"/g, '');
+        res.setHeader('Content-Type', fallbackMime);
         res.setHeader('Content-Disposition', `${disposition}; filename="${downloadName}"`);
         return res.sendFile(fullPath);
       }
     }
 
-    // Pré-visualização oficial gerada para documentos de demonstração inicial
-    const docTitle = escapeXml(docMeta?.title || 'Documento Escolar Digitalizado');
-    const stuName = escapeXml(docMeta?.studentName || 'Estudante Matriculado');
-    const stuProc = escapeXml(docMeta?.studentProcessNumber || '2026/0001');
-    const stuClass = escapeXml(docMeta?.className || 'Turma Escolar');
-    const uploader = escapeXml(docMeta?.uploadedByName || 'Encarregado de Educação');
-    const fileName = escapeXml(docMeta?.fileName || `${safeId}.svg`);
+    const fileName = escapeXml(`${safeId}.svg`);
     const sampleSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="840" height="580" viewBox="0 0 840 580">
   <rect width="840" height="580" fill="#ffffff"/>
   <rect x="24" y="24" width="792" height="532" rx="12" fill="#f8fafc" stroke="#0073b7" stroke-width="3"/>
   <rect x="24" y="24" width="792" height="84" rx="12" fill="#0073b7"/>
   <text x="420" y="60" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">REPÚBLICA DE ANGOLA · ARQUIVO DIGITAL ESCOLAR</text>
-  <text x="420" y="88" font-family="Arial, sans-serif" font-size="14" fill="#e0f2fe" text-anchor="middle">${docTitle}</text>
-  <text x="64" y="155" font-family="Arial, sans-serif" font-size="15" font-weight="bold" fill="#0f172a">Aluno(a): ${stuName}</text>
-  <text x="64" y="185" font-family="Arial, sans-serif" font-size="14" fill="#334155">N.º de Processo: ${stuProc}   |   Turma: ${stuClass}</text>
-  <text x="64" y="215" font-family="Arial, sans-serif" font-size="14" fill="#334155">Enviado por: ${uploader}</text>
-  <rect x="64" y="245" width="712" height="230" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6,4"/>
-  <text x="420" y="340" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#0073b7" text-anchor="middle">DOCUMENTO DIGITALIZADO ARQUIVADO</text>
-  <text x="420" y="372" font-family="Arial, sans-serif" font-size="13" fill="#475569" text-anchor="middle">Ficheiro de Referência: ${fileName}</text>
-  <text x="420" y="404" font-family="Arial, sans-serif" font-size="12" fill="#64748b" text-anchor="middle">Disponível para consulta do Professor e Administrador Escolar</text>
+  <text x="420" y="88" font-family="Arial, sans-serif" font-size="14" fill="#e0f2fe" text-anchor="middle">Documento Escolar Digitalizado</text>
+  <rect x="64" y="160" width="712" height="290" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="420" y="290" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#0073b7" text-anchor="middle">DOCUMENTO DIGITALIZADO ARQUIVADO</text>
+  <text x="420" y="325" font-family="Arial, sans-serif" font-size="13" fill="#475569" text-anchor="middle">Referência: ${fileName}</text>
+  <text x="420" y="360" font-family="Arial, sans-serif" font-size="12" fill="#64748b" text-anchor="middle">Disponível para consulta no Supabase Storage</text>
   <text x="64" y="520" font-family="Arial, sans-serif" font-size="12" fill="#64748b">Registo NEUROEDUCA Angola · Arquivo Digital Seguro</text>
 </svg>`;
     const disposition = req.query.download === '1' ? 'attachment' : 'inline';
@@ -805,7 +1106,6 @@ app.get('/api/archive/file/:id', (req: Request, res: Response) => {
   }
 });
 
-// Remoção de ficheiro do Arquivo Digital
 app.delete('/api/archive/file/:id', (req: Request, res: Response) => {
   try {
     const safeId = getSafeArchiveId(req.params.id);
@@ -821,14 +1121,6 @@ app.delete('/api/archive/file/:id', (req: Request, res: Response) => {
           }
         });
     }
-    const store = readStore();
-    if (Array.isArray(store.digitalArchive)) {
-      store.digitalArchive = store.digitalArchive.filter(
-        (item: any) => getSafeArchiveId(item.id) !== safeId
-      );
-      store.updatedAt = new Date().toISOString();
-      writeStore(store);
-    }
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'Erro ao eliminar ficheiro.' });
@@ -843,9 +1135,8 @@ app.post('/api/gemini/pedagogical-assistant', async (req: Request, res: Response
     subjectName,
     topic,
     subtopic,
-    learningObjectives,
     lessonDurationMinutes = 45,
-    assistantTask = 'plano_aula', // 'plano_aula' | 'exercicios' | 'avaliacao' | 'recuperacao'
+    assistantTask = 'plano_aula',
   } = req.body;
 
   if (!apiKey || !aiClient) {
@@ -943,17 +1234,16 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    // Modo de produção: serve arquivos compilados da pasta dist
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req: Request, res: Response) => {
+    app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 NEUROEDUCA rodando em http://localhost:${PORT}`);
-    console.log(`🇦🇴 Sistema de Gestão Escolar de Angola configurado`);
+    console.log(`🇦🇴 Sistema de Gestão Escolar de Angola configurado (100% Supabase)`);
   });
 }
 

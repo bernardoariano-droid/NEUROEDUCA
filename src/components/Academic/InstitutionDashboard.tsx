@@ -313,7 +313,7 @@ export const InstitutionDashboard: React.FC<InstitutionDashboardProps> = ({
     return synthesized;
   }, [auditLogs, currentInstitution.id, instStudents, instClasses, instInvoices, instGrades.length]);
 
-  const subsystemsSummary = currentInstitution.subsystems
+  const subsystemsSummary = (currentInstitution.subsystems || [])
     .map((code) => ANGOLA_EDUCATION_SUBSYSTEMS.find((s) => s.code === code)?.shortName || code)
     .slice(0, 3)
     .join(' · ');

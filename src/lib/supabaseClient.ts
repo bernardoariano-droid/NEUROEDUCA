@@ -280,17 +280,20 @@ export async function saveServerSupabaseConfig(
       credentials: 'include',
       body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey, autoSync })
     });
-    const data = (await res.json()) as {
+    const data = await safeParseJsonResponse<{
       success?: boolean;
       serverConfigured?: boolean;
       urlHost?: string | null;
       message?: string;
-    };
+    }>(res);
     if (res.ok && data?.success) {
       serverConfiguredCached = true;
       return { success: true, urlHost: data.urlHost || null };
     }
-    return { success: false, message: data?.message || 'Erro ao guardar no servidor.' };
+    return {
+      success: false,
+      message: data?.message || `Erro HTTP ${res.status} ao guardar no servidor.`
+    };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Erro de rede ao contactar servidor.' };
   }
@@ -303,7 +306,11 @@ export async function fetchServerSupabaseStatus(): Promise<ServerSupabaseStatus>
       serverConfiguredCached = false;
       return { serverConfigured: false, urlHost: null, normalizedUrl: '' };
     }
-    const data = (await res.json()) as ServerSupabaseStatus;
+    const data = await safeParseJsonResponse<ServerSupabaseStatus>(res);
+    if (!data) {
+      serverConfiguredCached = false;
+      return { serverConfigured: false, urlHost: null, normalizedUrl: '' };
+    }
     serverConfiguredCached = Boolean(data?.serverConfigured);
 
     if (
@@ -353,6 +360,18 @@ function getConfigBodyFields(): { url?: string; anonKey?: string } {
   };
 }
 
+async function safeParseJsonResponse<T>(res: Response): Promise<T | null> {
+  const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Testa conectividade e verifica estado das 18 tabelas relacionais no Supabase
  */
@@ -379,7 +398,8 @@ export async function testSupabaseConnection(
         })
       });
       if (res.ok || res.status === 400) {
-        return (await res.json()) as SupabaseHealthResult;
+        const parsed = await safeParseJsonResponse<SupabaseHealthResult>(res);
+        if (parsed) return parsed;
       }
     } catch {
       // Fallback para cliente directo se /api não responder
@@ -403,7 +423,17 @@ export async function testSupabaseConnection(
       credentials: 'include',
       body: JSON.stringify(getConfigBodyFields())
     });
-    return (await res.json()) as SupabaseHealthResult;
+    const parsed = await safeParseJsonResponse<SupabaseHealthResult>(res);
+    if (parsed) return parsed;
+    return {
+      success: false,
+      message: `Erro HTTP ${res.status} ao verificar estado do Supabase no servidor.`,
+      normalizedUrl: '',
+      tablesReady: 0,
+      totalTables: 17,
+      missingTables: [],
+      tableDetails: []
+    };
   } catch (err: any) {
     return {
       success: false,
@@ -440,7 +470,18 @@ export async function syncChangesToSupabaseClient(
         body: JSON.stringify({ ...batch, ...getConfigBodyFields() })
       });
       if (res.status !== 404) {
-        result = (await res.json()) as SupabaseMutateResult;
+        const parsed = await safeParseJsonResponse<SupabaseMutateResult>(res);
+        if (parsed) {
+          result = parsed;
+        } else {
+          result = {
+            success: false,
+            syncedCount: 0,
+            deletedCount: 0,
+            errors: [`Erro HTTP ${res.status} no servidor da API ao gravar no Supabase.`],
+            syncedAt: new Date().toISOString()
+          };
+        }
       }
     } catch (err: any) {
       if (!client || inMemorySessionToken) {
@@ -509,7 +550,20 @@ export async function syncLocalDataToSupabase(
         })
       });
       if (res.status !== 404) {
-        result = (await res.json()) as SupabaseSyncPushResult;
+        const parsed = await safeParseJsonResponse<SupabaseSyncPushResult>(res);
+        if (parsed) {
+          result = parsed;
+        } else {
+          result = {
+            success: false,
+            syncedCount: 0,
+            deletedCount: 0,
+            tableCounts: {},
+            missingTables: [],
+            errors: [`Erro HTTP ${res.status} no servidor da API ao enviar dados para o Supabase.`],
+            syncedAt: new Date().toISOString()
+          };
+        }
       }
     } catch (err: any) {
       if (!client || inMemorySessionToken) {
@@ -576,7 +630,20 @@ export async function pullSupabaseDataToLocal(): Promise<SupabaseSyncPullResult>
         body: JSON.stringify(getConfigBodyFields())
       });
       if (res.status !== 404) {
-        result = (await res.json()) as SupabaseSyncPullResult;
+        const parsed = await safeParseJsonResponse<SupabaseSyncPullResult>(res);
+        if (parsed) {
+          result = parsed;
+        } else {
+          result = {
+            success: false,
+            bundle: null,
+            pulledCount: 0,
+            tableCounts: {},
+            missingTables: [],
+            errors: [`Erro HTTP ${res.status} no servidor da API ao carregar dados do Supabase.`],
+            pulledAt: new Date().toISOString()
+          };
+        }
       }
     } catch (err: any) {
       if (!client || inMemorySessionToken) {
@@ -671,7 +738,7 @@ export async function restoreSessionFromSupabase(): Promise<CloudLoginResult> {
     });
     if (!res.ok) return { authenticated: false };
 
-    const data = (await res.json()) as CloudLoginResult;
+    const data = await safeParseJsonResponse<CloudLoginResult>(res);
     if (data?.authenticated && data?.account) {
       if (data.sessionToken) setSupabaseSessionToken(data.sessionToken);
       if (data.accessToken) setSupabaseAuthSessionToken(data.accessToken);
@@ -748,7 +815,11 @@ export async function checkSupabaseBootstrapStatus(): Promise<SupabaseBootstrapS
     if (!res.ok) {
       return { hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true };
     }
-    return (await res.json()) as SupabaseBootstrapStatus;
+    const data = await safeParseJsonResponse<SupabaseBootstrapStatus>(res);
+    if (!data) {
+      return { hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true };
+    }
+    return data;
   } catch {
     return { hasAccounts: true, bootstrapRequired: false, cloudUnavailable: true };
   }
@@ -809,7 +880,13 @@ export async function bootstrapSuperAdminInSupabase(
       credentials: 'include',
       body: JSON.stringify({ email: cleanEmail, fullName: cleanName, password: cleanPassword })
     });
-    const data = (await res.json()) as CloudLoginResult;
+    const data = await safeParseJsonResponse<CloudLoginResult>(res);
+    if (!data) {
+      return {
+        authenticated: false,
+        error: `Erro HTTP ${res.status} ao contactar servidor para inicialização.`
+      };
+    }
     if (data.authenticated && data.sessionToken) {
       setSupabaseSessionToken(data.sessionToken);
       await persistBrowserSessionCookie({ sessionToken: data.sessionToken });
@@ -840,7 +917,7 @@ export async function markAnnouncementReadInSupabase(
         body: JSON.stringify({ announcementId, readKey, ...getConfigBodyFields() })
       });
       if (res.ok) {
-        const data = (await res.json()) as { success?: boolean };
+        const data = await safeParseJsonResponse<{ success?: boolean }>(res);
         return Boolean(data?.success);
       }
     } catch {
@@ -995,7 +1072,8 @@ export async function verifySupabaseAccountLogin(
       body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
     });
     if (!res.ok) return { authenticated: false, cloudUnavailable: true };
-    const cloudRes = (await res.json()) as CloudLoginResult;
+    const cloudRes = await safeParseJsonResponse<CloudLoginResult>(res);
+    if (!cloudRes) return { authenticated: false, cloudUnavailable: true };
     if (cloudRes.authenticated) {
       if (cloudRes.sessionToken) setSupabaseSessionToken(cloudRes.sessionToken);
       if (cloudRes.accessToken) setSupabaseAuthSessionToken(cloudRes.accessToken);
@@ -1047,7 +1125,13 @@ export async function uploadStudentDocumentToSupabaseStorage(
         error: 'Não foi possível enviar o documento para o Supabase Storage.'
       };
     }
-    return (await res.json()) as StorageUploadResult;
+    const parsed = await safeParseJsonResponse<StorageUploadResult>(res);
+    if (parsed) return parsed;
+    return {
+      success: false,
+      storageBucket: STUDENT_DOCS_BUCKET,
+      error: `Erro HTTP ${res.status} ao enviar o documento para o Supabase Storage.`
+    };
   } catch (err: any) {
     if (client && !inMemorySessionToken) {
       return uploadArchiveDocumentToStorage(client, doc, fileDataBase64);
@@ -1104,7 +1188,7 @@ export async function resolveSignedStudentDocumentUrl(
         })
       });
       if (res.ok) {
-        const data = (await res.json()) as { success?: boolean; signedUrl?: string };
+        const data = await safeParseJsonResponse<{ success?: boolean; signedUrl?: string }>(res);
         if (data?.success && data.signedUrl) {
           return data.signedUrl;
         }

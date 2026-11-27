@@ -26,8 +26,16 @@ import {
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const SERVER_ROOT_DIR = (() => {
+  try {
+    if (typeof import.meta !== 'undefined' && typeof import.meta.url === 'string' && import.meta.url) {
+      return path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    // Fallback seguro para CommonJS / Vercel Serverless
+  }
+  return process.cwd();
+})();
 
 const app = express();
 app.set('trust proxy', 1);
@@ -106,10 +114,16 @@ function readSessionCookie(req: Request): SessionCookiePayload | null {
   }
 }
 
+function getNormalizedRequestHost(req: Request): string {
+  const raw = String(req.get('x-forwarded-host') || req.get('host') || '');
+  return raw.split(',')[0].trim().toLowerCase();
+}
+
 function buildCookieAttributes(req: Request, maxAgeSeconds: number): string[] {
-  const host = String(req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+  const host = getNormalizedRequestHost(req);
   const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
-  const isHttps = req.secure || req.get('x-forwarded-proto') === 'https';
+  const proto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase();
+  const isHttps = req.secure || proto === 'https';
 
   const attrs = ['Path=/', 'HttpOnly', `Max-Age=${maxAgeSeconds}`];
   if (isHttps || isLocal) {
@@ -140,7 +154,7 @@ function isValidMutationOrigin(req: Request): boolean {
   if (!origin) return true;
   try {
     const originHost = new URL(origin).host.toLowerCase();
-    const requestHost = String(req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+    const requestHost = getNormalizedRequestHost(req);
     return Boolean(originHost && requestHost && originHost === requestHost);
   } catch {
     return false;
@@ -195,7 +209,7 @@ app.get('/api/insignia', async (_req: Request, res: Response) => {
 
   const localFallbackCandidates = [
     path.join(process.cwd(), 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg'),
-    path.join(__dirname, 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg'),
+    path.join(SERVER_ROOT_DIR, 'public', 'assets', 'aistudio', 'IMG-20261010-WA0062_2b38905c.jpg'),
   ];
   for (const localFallback of localFallbackCandidates) {
     if (fs.existsSync(localFallback)) {
@@ -212,7 +226,7 @@ app.get('/api/insignia', async (_req: Request, res: Response) => {
 // Diretório temporário de ficheiros (usado apenas como fallback caso o bucket Supabase Storage não esteja acessível)
 const ARCHIVE_DIR = IS_VERCEL
   ? path.join(os.tmpdir(), '.neuroeduca_archive')
-  : path.join(__dirname, '.neuroeduca_archive');
+  : path.join(SERVER_ROOT_DIR, '.neuroeduca_archive');
 
 function ensureArchiveDir() {
   if (!fs.existsSync(ARCHIVE_DIR)) {
@@ -1227,14 +1241,15 @@ async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (!isProduction) {
-    const { createServer: createViteServer } = await import('vite');
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(SERVER_ROOT_DIR, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));

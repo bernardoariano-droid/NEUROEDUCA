@@ -24,6 +24,7 @@ export default function handler(req: any, res: any) {
   } catch {
     // Mantém req.url original caso o parsing falhe
   }
-  return app(req, res);
-}
 
+  const expressApp: any = typeof app === 'function' ? app : (app as any)?.default || (app as any)?.app;
+  return expressApp(req, res);
+}

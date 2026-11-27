@@ -5,7 +5,6 @@
  */
 
 import express, { Request, Response } from 'express';
-import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -43,23 +42,34 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '25mb' }));
 
-// Inicialização segura do SDK Gemini no servidor com telemetria obrigatória
+// Inicialização segura e sob demanda do SDK Gemini no servidor
 const apiKey = process.env.GEMINI_API_KEY || '';
-let aiClient: GoogleGenAI | null = null;
+let aiClient: any = null;
 
-if (apiKey) {
-  aiClient = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
+async function getGeminiClient() {
+  if (!apiKey) return null;
+  if (!aiClient) {
+    const { GoogleGenAI } = await import('@google/genai');
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
       },
-    },
-  });
+    });
+  }
+  return aiClient;
 }
 
 const IS_VERCEL = Boolean(
-  process.env.VERCEL || process.env.VERCEL_ENV || process.env.VERCEL_URL || process.env.AWS_LAMBDA_FUNCTION_NAME
+  process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.VERCEL_URL ||
+    process.env.NETLIFY ||
+    process.env.NETLIFY_LOCAL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT
 );
 const SESSION_COOKIE_NAME = 'ne_session';
 const SESSION_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
@@ -1155,7 +1165,8 @@ app.post('/api/gemini/pedagogical-assistant', async (req: Request, res: Response
     assistantTask = 'plano_aula',
   } = req.body;
 
-  if (!apiKey || !aiClient) {
+  const client = await getGeminiClient();
+  if (!apiKey || !client) {
     return res.status(503).json({
       error: 'API Gemini não configurada no servidor. Verifique a chave em Settings > Secrets.',
     });
@@ -1210,7 +1221,7 @@ Utilizas sempre a terminologia pedagógica angolana (Classes, Trimestres, Pautas
 Quando sugerires planos de aula ou actividades, respeitas rigorosamente as matrizes curriculares do INIDE.
 Apresenta o conteúdo formatado com clareza em Markdown profissional, com secções organizadas, tabelas e avisos práticos.`;
 
-    const response = await aiClient.models.generateContent({
+    const response = await client.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: taskInstruction,
       config: {

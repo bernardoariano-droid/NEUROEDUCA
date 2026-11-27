@@ -5,18 +5,24 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && npm run build:api",
+    "build:api": "esbuild scripts/vercel-api-entry.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.mjs && esbuild scripts/netlify-api-entry.ts --bundle --platform=node --format=esm --packages=external --outfile=netlify/functions/api.mjs",
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",
     "@supabase/supabase-js": "^2.119.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "autoprefixer": "^10.4.21",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.25.0",
     "express": "^4.21.2",
     "html2canvas-pro": "^2.6.4",
     "jspdf": "^4.2.1",
@@ -24,7 +30,10 @@
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "serverless-http": "^4.0.0",
+    "tailwindcss": "^4.3.3",
     "vite": "^8.3.0",
+    "vite-plugin-pwa": "^2.0.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -32,11 +41,7 @@
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
-    "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^7.0.2",
-    "vite-plugin-pwa/client": "^2.0.0"
+    "typescript": "^7.0.2"
   }
 }

@@ -37,6 +37,6 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "vite/client": "^2.0.0"
+    "vite-plugin-pwa/client": "^2.0.0"
   }
 }

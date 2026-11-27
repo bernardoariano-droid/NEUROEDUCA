@@ -458,6 +458,7 @@ export async function syncChangesToSupabaseClient(
   let result: SupabaseMutateResult | null = null;
 
   if (shouldUseServerProxy() || !client) {
+    let proxyFallbackError: string | null = null;
     try {
       const res = await fetch('/api/supabase/mutate', {
         method: 'POST',
@@ -474,25 +475,21 @@ export async function syncChangesToSupabaseClient(
         if (parsed) {
           result = parsed;
         } else {
-          result = {
-            success: false,
-            syncedCount: 0,
-            deletedCount: 0,
-            errors: [`Erro HTTP ${res.status} no servidor da API ao gravar no Supabase.`],
-            syncedAt: new Date().toISOString()
-          };
+          proxyFallbackError = `Erro HTTP ${res.status} no servidor da API ao gravar no Supabase.`;
         }
       }
     } catch (err: any) {
-      if (!client || inMemorySessionToken) {
-        result = {
-          success: false,
-          syncedCount: 0,
-          deletedCount: 0,
-          errors: [err?.message || 'Erro de rede ao contactar servidor Supabase.'],
-          syncedAt: new Date().toISOString()
-        };
-      }
+      proxyFallbackError = err?.message || 'Erro de rede ao contactar servidor Supabase.';
+    }
+
+    if (!result && proxyFallbackError && (!client || !inMemoryAccessToken)) {
+      result = {
+        success: false,
+        syncedCount: 0,
+        deletedCount: 0,
+        errors: [proxyFallbackError],
+        syncedAt: new Date().toISOString()
+      };
     }
   }
 
@@ -534,6 +531,7 @@ export async function syncLocalDataToSupabase(
   let result: SupabaseSyncPushResult | null = null;
 
   if (shouldUseServerProxy() || !client) {
+    let proxyFallbackError: string | null = null;
     try {
       const res = await fetch('/api/supabase/push', {
         method: 'POST',
@@ -554,29 +552,23 @@ export async function syncLocalDataToSupabase(
         if (parsed) {
           result = parsed;
         } else {
-          result = {
-            success: false,
-            syncedCount: 0,
-            deletedCount: 0,
-            tableCounts: {},
-            missingTables: [],
-            errors: [`Erro HTTP ${res.status} no servidor da API ao enviar dados para o Supabase.`],
-            syncedAt: new Date().toISOString()
-          };
+          proxyFallbackError = `Erro HTTP ${res.status} no servidor da API ao enviar dados para o Supabase.`;
         }
       }
     } catch (err: any) {
-      if (!client || inMemorySessionToken) {
-        result = {
-          success: false,
-          syncedCount: 0,
-          deletedCount: 0,
-          tableCounts: {},
-          missingTables: [],
-          errors: [err?.message || 'Erro de rede ao contactar servidor Supabase.'],
-          syncedAt: new Date().toISOString()
-        };
-      }
+      proxyFallbackError = err?.message || 'Erro de rede ao contactar servidor Supabase.';
+    }
+
+    if (!result && proxyFallbackError && (!client || !inMemoryAccessToken)) {
+      result = {
+        success: false,
+        syncedCount: 0,
+        deletedCount: 0,
+        tableCounts: {},
+        missingTables: [],
+        errors: [proxyFallbackError],
+        syncedAt: new Date().toISOString()
+      };
     }
   }
 
@@ -619,6 +611,7 @@ export async function pullSupabaseDataToLocal(): Promise<SupabaseSyncPullResult>
   let result: SupabaseSyncPullResult | null = null;
 
   if (shouldUseServerProxy() || !client) {
+    let proxyFallbackError: string | null = null;
     try {
       const res = await fetch('/api/supabase/pull', {
         method: 'POST',
@@ -634,29 +627,23 @@ export async function pullSupabaseDataToLocal(): Promise<SupabaseSyncPullResult>
         if (parsed) {
           result = parsed;
         } else {
-          result = {
-            success: false,
-            bundle: null,
-            pulledCount: 0,
-            tableCounts: {},
-            missingTables: [],
-            errors: [`Erro HTTP ${res.status} no servidor da API ao carregar dados do Supabase.`],
-            pulledAt: new Date().toISOString()
-          };
+          proxyFallbackError = `Erro HTTP ${res.status} no servidor da API ao carregar dados do Supabase.`;
         }
       }
     } catch (err: any) {
-      if (!client || inMemorySessionToken) {
-        result = {
-          success: false,
-          bundle: null,
-          pulledCount: 0,
-          tableCounts: {},
-          missingTables: [],
-          errors: [err?.message || 'Erro de rede ao carregar dados do Supabase.'],
-          pulledAt: new Date().toISOString()
-        };
-      }
+      proxyFallbackError = err?.message || 'Erro de rede ao carregar dados do Supabase.';
+    }
+
+    if (!result && proxyFallbackError && (!client || !inMemoryAccessToken)) {
+      result = {
+        success: false,
+        bundle: null,
+        pulledCount: 0,
+        tableCounts: {},
+        missingTables: [],
+        errors: [proxyFallbackError],
+        pulledAt: new Date().toISOString()
+      };
     }
   }
 

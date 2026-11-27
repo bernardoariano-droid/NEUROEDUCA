@@ -3227,7 +3227,8 @@ export default function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ document: savedDoc, fileDataBase64 })
           });
-          if (resp.ok) {
+          const contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+          if (resp.ok && contentType.includes('application/json')) {
             const data = await resp.json();
             if (data?.document) {
               savedDoc = data.document;

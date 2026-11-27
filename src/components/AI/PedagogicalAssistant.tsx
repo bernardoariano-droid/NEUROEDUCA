@@ -76,9 +76,10 @@ export const PedagogicalAssistant: React.FC<PedagogicalAssistantProps> = ({
         }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Erro ao comunicar com o servidor');
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const data = contentType.includes('application/json') ? await response.json() : null;
+      if (!response.ok || !data) {
+        throw new Error(data?.error || `Erro HTTP ${response.status} ao comunicar com o servidor`);
       }
 
       setGeneratedResult(data.resultText);

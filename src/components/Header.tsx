@@ -540,6 +540,7 @@ export const Header: React.FC<HeaderProps> = ({
                       currentUser?.role !== 'professor' &&
                       currentUser?.role !== 'director_turma' &&
                       currentUser?.role !== 'director_municipal' &&
+                      currentUser?.role !== 'funcionario_financeiro' &&
                       onNavigateTab && (
                         <button
                           type="button"

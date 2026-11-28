@@ -133,8 +133,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     !isSuperAdminMode &&
     (currentUser?.role === 'director_municipal' || activeRole === 'director_municipal');
 
+  const isTreasurerMode =
+    !isStudentMode &&
+    !isProfessorMode &&
+    !isSuperAdminMode &&
+    !isMunicipalDirectorMode &&
+    currentUser?.role === 'funcionario_financeiro';
+
   const isSchoolAdminMode =
-    !isStudentMode && !isProfessorMode && !isSuperAdminMode && !isMunicipalDirectorMode;
+    !isStudentMode &&
+    !isProfessorMode &&
+    !isSuperAdminMode &&
+    !isMunicipalDirectorMode &&
+    !isTreasurerMode;
 
   // Identificar estritamente o(s) aluno(s) autorizado(s) na sessão se for modo estudante/encarregado
   const authorizedStudents = isStudentMode
@@ -166,13 +177,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     ? authorizedStudents
     : isProfessorMode
     ? currentInstStudents.filter((s) => allowedClassesForUser.some((c) => c.id === s.classId))
-    : isSchoolAdminMode
+    : isSchoolAdminMode || isTreasurerMode
     ? currentInstStudents
     : [];
 
   const filteredInvoices = isStudentMode
     ? currentInstInvoices.filter((i) => authorizedStudentIds.has(i.studentId))
-    : isSchoolAdminMode
+    : isSchoolAdminMode || isTreasurerMode
     ? currentInstInvoices
     : [];
 
@@ -438,6 +449,49 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         }
       });
     }
+  } else if (isTreasurerMode) {
+    if (q === '' || 'propina factura pagamento controlo mensal atraso cobranca whatsapp sms tesoureiro'.includes(q)) {
+      items.push({
+        id: 'act-new-invoice',
+        category: 'Acções Rápidas',
+        title: 'Registar Pagamento (Propina / Outros)',
+        subtitle: 'Controlo mensal por aluno, turma e subsistema · Registo exclusivo do Tesoureiro',
+        icon: <DollarSign className="w-4 h-4 text-emerald-500" />,
+        action: () => {
+          onClose();
+          if (onOpenNewInvoice) onOpenNewInvoice();
+          else onNavigateTab('financial');
+        }
+      });
+    }
+
+    if (q === '' || 'atraso devedores vencido cobranca whatsapp sms comunicado'.includes(q)) {
+      items.push({
+        id: 'act-treasurer-overdue',
+        category: 'Acções Rápidas',
+        title: 'Alunos em Atraso & Cobranças (WhatsApp / SMS)',
+        subtitle: 'Consultar propinas vencidas e enviar comunicados pré-elaborados',
+        icon: <ClipboardList className="w-4 h-4 text-amber-500" />,
+        action: () => {
+          onClose();
+          onNavigateTab('financial');
+        }
+      });
+    }
+
+    if (q === '' || 'recibo comprovativo documento'.includes(q)) {
+      items.push({
+        id: 'act-treasurer-receipts',
+        category: 'Acções Rápidas',
+        title: 'Recibos & Documentos Financeiros',
+        subtitle: 'Emitir recibos oficiais de propinas com QR Code',
+        icon: <FileText className="w-4 h-4 text-sky-500" />,
+        action: () => {
+          onClose();
+          onNavigateTab('documents');
+        }
+      });
+    }
   } else {
     // Acções Exclusivas do Administrador Escolar
     if (q === '' || 'matricular aluno estudante novo'.includes(q)) {
@@ -547,7 +601,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         icon: <GraduationCap className="w-4 h-4 text-sky-400" />,
         action: () => {
           onClose();
-          onNavigateTab(isStudentMode ? 'student_portal' : 'students');
+          onNavigateTab(isStudentMode ? 'student_portal' : isTreasurerMode ? 'financial' : 'students');
         }
       });
     });
@@ -602,8 +656,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     });
   }
 
-  // Pesquisa de Facturas (Apenas Administrador Escolar ou Aluno/Encarregado nas suas próprias facturas)
-  if (q.length > 0 && (isSchoolAdminMode || isStudentMode)) {
+  // Pesquisa de Facturas (Administrador Escolar, Tesoureiro ou Aluno/Encarregado nas suas próprias facturas)
+  if (q.length > 0 && (isSchoolAdminMode || isTreasurerMode || isStudentMode)) {
     const matchedInvoices = filteredInvoices.filter(
       (inv) =>
         inv.invoiceNumber.toLowerCase().includes(q) ||
@@ -699,6 +753,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         { title: 'Escolas do Município', tab: 'municipal_schools', desc: 'Lista e inspecção das escolas sob tutela municipal', icon: <Building2 className="w-4 h-4 text-sky-500" /> },
         { title: 'Matriculados por Género, Classe e Turma', tab: 'municipal_enrollment', desc: 'Estatística de matrículas M/F por escola, turma e consolidado', icon: <Users className="w-4 h-4 text-sky-500" /> },
         { title: 'Aproveitamento Escolar por Escola', tab: 'municipal_performance', desc: 'Taxas de aprovação, recurso, reprovação e consulta de pautas', icon: <Award className="w-4 h-4 text-amber-500" /> }
+      ]
+    : isTreasurerMode
+    ? [
+        { title: 'Tesouraria, Propinas & Cobranças', tab: 'financial', desc: 'Controlo mensal, alunos em atraso e comunicados WhatsApp / SMS', icon: <DollarSign className="w-4 h-4 text-emerald-500" /> },
+        { title: 'Recibos & Documentos Financeiros', tab: 'documents', desc: 'Emissão oficial de recibos de pagamento com código QR', icon: <FileText className="w-4 h-4 text-amber-500" /> },
+        { title: 'Comunicações', tab: 'communications', desc: 'Avisos financeiros e circulares da direcção escolar', icon: <Megaphone className="w-4 h-4 text-emerald-500" /> }
       ]
     : [
         { title: 'Painel Executivo / Dashboard', tab: 'dashboard', desc: 'Métricas em tempo real, capacidade e calendário MED', icon: <Building2 className="w-4 h-4 text-sky-400" /> },

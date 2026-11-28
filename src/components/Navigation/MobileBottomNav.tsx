@@ -19,7 +19,8 @@ import {
   UserCheck,
   Receipt,
   HardDrive,
-  BarChart3
+  BarChart3,
+  Megaphone
 } from 'lucide-react';
 import { UserRole, UserProfile } from '../../types';
 
@@ -55,6 +56,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     currentUser?.role === 'encarregado_educacao' ||
     activeRole === 'aluno' ||
     activeRole === 'encarregado_educacao';
+  const isTreasurer = currentUser?.role === 'funcionario_financeiro';
 
   const tabClass = (active: boolean) =>
     `flex flex-col items-center justify-center py-1.5 px-2 min-w-[56px] min-h-[44px] rounded-xl transition cursor-pointer ${
@@ -208,6 +210,32 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
             >
               <Receipt className="w-5 h-5 mb-0.5" />
               <span className="text-[10px] leading-tight">Matrícula</span>
+            </button>
+          </>
+        ) : isTreasurer ? (
+          <>
+            <button
+              onClick={() => onSelectTab('financial')}
+              className={tabClass(currentTab === 'financial')}
+            >
+              <CreditCard className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Tesouraria</span>
+            </button>
+
+            <button
+              onClick={() => onSelectTab('documents')}
+              className={tabClass(currentTab === 'documents')}
+            >
+              <Receipt className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Recibos</span>
+            </button>
+
+            <button
+              onClick={() => onSelectTab('communications')}
+              className={tabClass(currentTab === 'communications')}
+            >
+              <Megaphone className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Comunic.</span>
             </button>
           </>
         ) : (

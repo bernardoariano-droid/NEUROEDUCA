@@ -2,7 +2,8 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * NEUROEDUCA - Gestão Financeira Escolar (Exclusivo do Tesoureiro)
- * Registo de Propinas, Matrículas e Outros Emolumentos + Notificações a Alunos e Encarregados
+ * Registo de Propinas e Outros Pagamentos · Controlo Mensal (Aluno/Turma/Subsistema) ·
+ * Visualização de Alunos em Atraso · Comunicados Pré-Elaborados com Redireccionamento Manual WhatsApp / SMS
  */
 
 import React, { useState, useRef, useMemo } from 'react';
@@ -23,9 +24,18 @@ import {
   Layers,
   MailCheck,
   Clock,
-  Users
+  Users,
+  CalendarDays,
+  MessageCircle,
+  MessageSquare,
+  Filter,
+  RotateCcw,
+  ExternalLink,
+  PhoneOff
 } from 'lucide-react';
 import {
+  ClassRoom,
+  EducationSubsystemCode,
   FinancialCategory,
   FinancialNotification,
   FinancialNotificationTarget,
@@ -36,6 +46,7 @@ import {
   Student,
   UserProfile
 } from '../../types';
+import { ANGOLA_EDUCATION_SUBSYSTEMS } from '../../data/angolaCurriculum';
 import { formatKwanza, generateMulticaixaReference, formatAngolaDate } from '../../utils/currency';
 import { QrCodeView } from '../common/QrCodeView';
 import { OfficialDocumentHeader } from '../common/OfficialDocumentHeader';
@@ -71,6 +82,7 @@ interface FinancialManagerProps {
   currentInstitution: Institution;
   invoices: Invoice[];
   students: Student[];
+  classes?: ClassRoom[];
   isTreasurer: boolean;
   currentUser?: UserProfile | null;
   financialNotifications?: FinancialNotification[];
@@ -101,6 +113,99 @@ const OTHER_FEE_PRESETS = [
   { label: 'Transporte Escolar Mensal', amount: 25000 }
 ];
 
+const ACADEMIC_MONTHS = [
+  { key: 'setembro', label: 'Setembro/2026', short: 'Set', defaultDue: '2026-09-10' },
+  { key: 'outubro', label: 'Outubro/2026', short: 'Out', defaultDue: '2026-10-10' },
+  { key: 'novembro', label: 'Novembro/2026', short: 'Nov', defaultDue: '2026-11-10' },
+  { key: 'dezembro', label: 'Dezembro/2026', short: 'Dez', defaultDue: '2026-12-10' },
+  { key: 'janeiro', label: 'Janeiro/2027', short: 'Jan', defaultDue: '2027-01-10' },
+  { key: 'fevereiro', label: 'Fevereiro/2027', short: 'Fev', defaultDue: '2027-02-10' },
+  { key: 'marco', label: 'Março/2027', short: 'Mar', defaultDue: '2027-03-10' },
+  { key: 'abril', label: 'Abril/2027', short: 'Abr', defaultDue: '2027-04-10' },
+  { key: 'maio', label: 'Maio/2027', short: 'Mai', defaultDue: '2027-05-10' },
+  { key: 'junho', label: 'Junho/2027', short: 'Jun', defaultDue: '2027-06-10' },
+  { key: 'julho', label: 'Julho/2027', short: 'Jul', defaultDue: '2027-07-10' }
+];
+
+interface MessageTemplateOption {
+  id: 'atraso_urgente' | 'lembrete_amigavel' | 'outros_emolumentos' | 'confirmacao_recibo';
+  label: string;
+  badge: string;
+  notifType: FinancialNotificationType;
+  description: string;
+}
+
+const COLLECTION_TEMPLATES: MessageTemplateOption[] = [
+  {
+    id: 'atraso_urgente',
+    label: 'Aviso de Propina em Atraso',
+    badge: 'Atraso',
+    notifType: 'aviso_atraso',
+    description: 'Comunica propinas vencidas com montante em dívida e referência Multicaixa.'
+  },
+  {
+    id: 'lembrete_amigavel',
+    label: 'Lembrete Amigável Mensal',
+    badge: 'Lembrete',
+    notifType: 'cobranca_pendente',
+    description: 'Recorda o prazo de vencimento da propina mensal ou taxa pendente.'
+  },
+  {
+    id: 'outros_emolumentos',
+    label: 'Cobrança de Outros Pagamentos',
+    badge: 'Outros',
+    notifType: 'emolumento_outros',
+    description: 'Para declarações, certificados, exames, uniformes, transporte ou matrícula.'
+  },
+  {
+    id: 'confirmacao_recibo',
+    label: 'Confirmação de Pagamento',
+    badge: 'Recibo',
+    notifType: 'confirmacao_pagamento',
+    description: 'Confirma a liquidação recebida pela Tesouraria e nº de recibo.'
+  }
+];
+
+const normalizeText = (value?: string): string =>
+  (value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+const matchAcademicMonthKey = (monthReference?: string): string | null => {
+  const norm = normalizeText(monthReference);
+  if (!norm) return null;
+  const found = ACADEMIC_MONTHS.find((m) => norm.includes(m.key));
+  return found ? found.key : null;
+};
+
+const normalizeAngolaPhone = (
+  raw?: string
+): { waDigits: string; smsTarget: string; display: string } | null => {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  const digitsOnly = trimmed.replace(/\D/g, '');
+  if (digitsOnly.length < 7) return null;
+  let waDigits = digitsOnly;
+  if (digitsOnly.startsWith('00244')) {
+    waDigits = digitsOnly.slice(2);
+  } else if (digitsOnly.length === 9 && digitsOnly.startsWith('9')) {
+    waDigits = `244${digitsOnly}`;
+  }
+  return {
+    waDigits,
+    smsTarget: `+${waDigits}`,
+    display: trimmed
+  };
+};
+
+const buildWhatsAppHref = (waDigits: string, text: string): string =>
+  `https://wa.me/${waDigits}?text=${encodeURIComponent(text)}`;
+
+const buildSmsHref = (smsTarget: string, text: string): string =>
+  `sms:${smsTarget}?body=${encodeURIComponent(text)}`;
+
 const inferCategory = (inv: Invoice): FinancialCategory => {
   if (inv.category) return inv.category;
   const d = inv.description.toLowerCase();
@@ -114,7 +219,7 @@ const categoryBadge = (cat: FinancialCategory) => {
     return { label: 'Propina', classes: 'bg-[#eaf6ee] text-[#055827] border-[#cde6d5]' };
   }
   if (cat === 'matricula') {
-    return { label: 'Matrícula', classes: 'bg-sky-50 text-sky-700 border-sky-200' };
+    return { label: 'Taxa Matrícula', classes: 'bg-sky-50 text-sky-700 border-sky-200' };
   }
   return { label: 'Outros', classes: 'bg-slate-100 text-slate-700 border-slate-200' };
 };
@@ -126,13 +231,13 @@ const notifTypeLabel = (type: FinancialNotificationType) => {
     case 'cobranca_pendente':
       return { label: 'Cobrança Pendente', classes: 'bg-amber-50 text-amber-700 border-amber-200' };
     case 'confirmacao_matricula':
-      return { label: 'Matrícula Confirmada', classes: 'bg-[#eaf6ee] text-[#055827] border-[#cde6d5]' };
+      return { label: 'Taxa Matrícula Confirmada', classes: 'bg-[#eaf6ee] text-[#055827] border-[#cde6d5]' };
     case 'confirmacao_pagamento':
       return { label: 'Pagamento Confirmado', classes: 'bg-[#eaf6ee] text-[#055827] border-[#cde6d5]' };
     case 'emolumento_outros':
       return { label: 'Outros Emolumentos', classes: 'bg-sky-50 text-sky-700 border-sky-200' };
     default:
-      return { label: 'Aviso Geral', classes: 'bg-slate-100 text-slate-700 border-slate-200' };
+      return { label: 'Comunicado de Cobrança', classes: 'bg-slate-100 text-slate-700 border-slate-200' };
   }
 };
 
@@ -140,6 +245,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
   currentInstitution,
   invoices,
   students,
+  classes = [],
   isTreasurer,
   financialNotifications = [],
   onAddPayment,
@@ -156,13 +262,77 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
     () => students.filter((s) => s.institutionId === currentInstitution.id),
     [students, currentInstitution.id]
   );
+  const instClasses = useMemo(
+    () => classes.filter((c) => c.institutionId === currentInstitution.id),
+    [classes, currentInstitution.id]
+  );
   const instNotifications = useMemo(
     () => financialNotifications.filter((n) => n.institutionId === currentInstitution.id),
     [financialNotifications, currentInstitution.id]
   );
 
-  const [activeSection, setActiveSection] = useState<'lancamentos' | 'matriculas' | 'notificacoes'>('lancamentos');
+  const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  const isInvoiceOverdue = (inv: Invoice): boolean => {
+    if (inv.status === 'pago' || inv.balanceAoa <= 0) return false;
+    if (inv.status === 'vencido') return true;
+    return Boolean(inv.dueDate && inv.dueDate < todayIso);
+  };
+
+  const getDaysOverdue = (dueDate?: string): number => {
+    if (!dueDate) return 0;
+    const dueMs = Date.parse(`${dueDate}T00:00:00`);
+    const todayMs = Date.parse(`${todayIso}T00:00:00`);
+    if (Number.isNaN(dueMs) || Number.isNaN(todayMs)) return 0;
+    return Math.max(0, Math.floor((todayMs - dueMs) / (1000 * 60 * 60 * 24)));
+  };
+
+  // Mapas para cruzamento Subsistema -> Turma -> Aluno
+  const classById = useMemo(
+    () => new Map(instClasses.map((c) => [c.id, c])),
+    [instClasses]
+  );
+  const studentById = useMemo(
+    () => new Map(instStudents.map((s) => [s.id, s])),
+    [instStudents]
+  );
+
+  const resolveSubsystemMeta = (code?: EducationSubsystemCode) =>
+    ANGOLA_EDUCATION_SUBSYSTEMS.find((s) => s.code === code);
+
+  const resolveStudentHierarchy = (stu?: Student) => {
+    const cls = stu?.classId ? classById.get(stu.classId) : undefined;
+    const subsystemCode = cls?.subsystemCode || stu?.subsystemCode;
+    const subMeta = resolveSubsystemMeta(subsystemCode);
+    return {
+      subsystemCode: subsystemCode || ('' as EducationSubsystemCode | ''),
+      subsystemLabel: subMeta?.shortName || subMeta?.name || 'Sem Subsistema',
+      classId: cls?.id || stu?.classId || '',
+      className: cls?.name || stu?.className || 'Sem Turma',
+      gradeLevel: cls?.gradeLevel || stu?.gradeLevel || ''
+    };
+  };
+
+  // Subsistemas presentes nesta escola
+  const availableSubsystems = useMemo(() => {
+    const codes = new Set<EducationSubsystemCode>();
+    (currentInstitution.subsystems || []).forEach((c) => codes.add(c));
+    instClasses.forEach((c) => codes.add(c.subsystemCode));
+    instStudents.forEach((s) => {
+      if (s.subsystemCode) codes.add(s.subsystemCode);
+    });
+    return ANGOLA_EDUCATION_SUBSYSTEMS.filter((sub) => codes.has(sub.code));
+  }, [currentInstitution.subsystems, instClasses, instStudents]);
+
+  // Estados de navegação & filtros hierárquicos (Subsistema -> Turma -> Aluno -> Mês)
+  const [activeSection, setActiveSection] = useState<
+    'lancamentos' | 'controlo_mensal' | 'atrasos' | 'matriculas' | 'notificacoes'
+  >('lancamentos');
   const [searchTerm, setSearchTerm] = useState('');
+  const [subsystemFilter, setSubsystemFilter] = useState<'todos' | EducationSubsystemCode>('todos');
+  const [classFilter, setClassFilter] = useState<string>('todas');
+  const [studentFilter, setStudentFilter] = useState<string>('todos');
+  const [monthFilter, setMonthFilter] = useState<string>('todos');
   const [statusFilter, setStatusFilter] = useState<'todos' | 'pago' | 'pendente' | 'vencido'>('todos');
   const [categoryFilter, setCategoryFilter] = useState<'todas' | FinancialCategory>('todas');
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -172,6 +342,41 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(initialOpenModal && isTreasurer);
   const [isNotifModalOpen, setIsNotifModalOpen] = useState(false);
   const receiptRef = useRef<HTMLDivElement>(null);
+
+  // Turmas filtradas pelo Subsistema seleccionado
+  const filteredClassOptions = useMemo(() => {
+    if (subsystemFilter === 'todos') return instClasses;
+    return instClasses.filter((c) => c.subsystemCode === subsystemFilter);
+  }, [instClasses, subsystemFilter]);
+
+  // Alunos filtrados por Subsistema + Turma (para o selector Aluno por Aluno)
+  const filteredStudentOptions = useMemo(() => {
+    return instStudents.filter((stu) => {
+      const meta = resolveStudentHierarchy(stu);
+      if (subsystemFilter !== 'todos' && meta.subsystemCode !== subsystemFilter) return false;
+      if (classFilter !== 'todas' && meta.classId !== classFilter) return false;
+      return true;
+    });
+  }, [instStudents, subsystemFilter, classFilter, classById]);
+
+  const studentMatchesHierarchy = (stu?: Student): boolean => {
+    if (!stu) return subsystemFilter === 'todos' && classFilter === 'todas' && studentFilter === 'todos';
+    const meta = resolveStudentHierarchy(stu);
+    if (subsystemFilter !== 'todos' && meta.subsystemCode !== subsystemFilter) return false;
+    if (classFilter !== 'todas' && meta.classId !== classFilter) return false;
+    if (studentFilter !== 'todos' && stu.id !== studentFilter) return false;
+    return true;
+  };
+
+  const resetHierarchyFilters = () => {
+    setSubsystemFilter('todos');
+    setClassFilter('todas');
+    setStudentFilter('todos');
+    setMonthFilter('todos');
+    setSearchTerm('');
+    setStatusFilter('todos');
+    setCategoryFilter('todas');
+  };
 
   // Estado do formulário de registo financeiro (Exclusivo do Tesoureiro)
   const [regCategory, setRegCategory] = useState<FinancialCategory>('propina');
@@ -196,12 +401,14 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
   const [paySendNotif, setPaySendNotif] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Estado do modal de envio de notificação financeira
+  // Estado do modal de envio de comunicado/notificação financeira (+ redireccionamento WhatsApp / SMS)
   const [notifMode, setNotifMode] = useState<'individual' | 'lote_dividas'>('individual');
   const [notifStudentId, setNotifStudentId] = useState(instStudents[0]?.id || '');
   const [notifTarget, setNotifTarget] = useState<FinancialNotificationTarget>('ambos');
-  const [notifType, setNotifType] = useState<FinancialNotificationType>('cobranca_pendente');
-  const [notifTitle, setNotifTitle] = useState('Situação Financeira na Tesouraria');
+  const [notifType, setNotifType] = useState<FinancialNotificationType>('aviso_atraso');
+  const [selectedTemplateId, setSelectedTemplateId] =
+    useState<MessageTemplateOption['id']>('atraso_urgente');
+  const [notifTitle, setNotifTitle] = useState('Aviso de Propina em Atraso');
   const [notifMessage, setNotifMessage] = useState('');
   const [notifInvoiceId, setNotifInvoiceId] = useState<string | undefined>(undefined);
 
@@ -214,25 +421,149 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
     if (!isTreasurer) {
       showToast(
         'error',
-        'Acesso Restrito: O registo de finanças e o envio de notificações financeiras são da responsabilidade exclusiva do Tesoureiro.'
+        'Acesso Restrito: O registo de pagamentos e envio de cobranças é responsabilidade exclusiva do Tesoureiro.'
       );
       return false;
     }
     return true;
   };
 
-  const filteredInvoices = instInvoices.filter((inv) => {
-    const q = searchTerm.toLowerCase();
-    const matchSearch =
-      inv.studentName.toLowerCase().includes(q) ||
-      inv.invoiceNumber.toLowerCase().includes(q) ||
-      inv.studentProcessNumber.toLowerCase().includes(q) ||
-      inv.description.toLowerCase().includes(q);
-    const matchStatus = statusFilter === 'todos' || inv.status === statusFilter;
-    const cat = inferCategory(inv);
-    const matchCategory = categoryFilter === 'todas' || cat === categoryFilter;
-    return matchSearch && matchStatus && matchCategory;
-  });
+  // Facturas filtradas por hierarquia + pesquisa + mês + categoria + estado
+  const filteredInvoices = useMemo(() => {
+    const q = searchTerm.toLowerCase().trim();
+    return instInvoices.filter((inv) => {
+      const stu = studentById.get(inv.studentId);
+      if (!studentMatchesHierarchy(stu)) return false;
+
+      if (monthFilter !== 'todos') {
+        const mKey = matchAcademicMonthKey(inv.monthReference);
+        if (mKey !== monthFilter) return false;
+      }
+
+      if (q) {
+        const meta = resolveStudentHierarchy(stu);
+        const matchSearch =
+          inv.studentName.toLowerCase().includes(q) ||
+          inv.invoiceNumber.toLowerCase().includes(q) ||
+          inv.studentProcessNumber.toLowerCase().includes(q) ||
+          inv.description.toLowerCase().includes(q) ||
+          inv.monthReference.toLowerCase().includes(q) ||
+          meta.className.toLowerCase().includes(q) ||
+          meta.subsystemLabel.toLowerCase().includes(q);
+        if (!matchSearch) return false;
+      }
+
+      const overdue = isInvoiceOverdue(inv);
+      const matchStatus =
+        statusFilter === 'todos'
+          ? true
+          : statusFilter === 'vencido'
+          ? overdue
+          : statusFilter === 'pendente'
+          ? inv.status !== 'pago' && !overdue
+          : inv.status === statusFilter;
+
+      const cat = inferCategory(inv);
+      const matchCategory = categoryFilter === 'todas' || cat === categoryFilter;
+      return matchStatus && matchCategory;
+    });
+  }, [
+    instInvoices,
+    studentById,
+    subsystemFilter,
+    classFilter,
+    studentFilter,
+    monthFilter,
+    searchTerm,
+    statusFilter,
+    categoryFilter,
+    todayIso
+  ]);
+
+  // Alunos para a vista "Controlo Mensal" e "Taxas de Matrícula"
+  const filteredMatrixStudents = useMemo(() => {
+    const q = searchTerm.toLowerCase().trim();
+    return instStudents.filter((stu) => {
+      if (!studentMatchesHierarchy(stu)) return false;
+      if (!q) return true;
+      const meta = resolveStudentHierarchy(stu);
+      return (
+        stu.fullName.toLowerCase().includes(q) ||
+        stu.processNumber.toLowerCase().includes(q) ||
+        stu.guardianName.toLowerCase().includes(q) ||
+        meta.className.toLowerCase().includes(q) ||
+        meta.subsystemLabel.toLowerCase().includes(q)
+      );
+    });
+  }, [instStudents, subsystemFilter, classFilter, studentFilter, searchTerm, classById]);
+
+  // Agrupamento de Alunos em Atraso (aluno por aluno)
+  const overdueStudentsList = useMemo(() => {
+    const q = searchTerm.toLowerCase().trim();
+    const grouped = new Map<
+      string,
+      {
+        student: Student;
+        overdueInvoices: Invoice[];
+        totalOverdueAoa: number;
+        oldestDueDate: string;
+        maxDaysOverdue: number;
+      }
+    >();
+
+    instInvoices.forEach((inv) => {
+      if (!isInvoiceOverdue(inv)) return;
+      if (monthFilter !== 'todos') {
+        const mKey = matchAcademicMonthKey(inv.monthReference);
+        if (mKey !== monthFilter) return;
+      }
+      const stu = studentById.get(inv.studentId);
+      if (!stu) return;
+
+      const current = grouped.get(stu.id);
+      const days = getDaysOverdue(inv.dueDate);
+      if (!current) {
+        grouped.set(stu.id, {
+          student: stu,
+          overdueInvoices: [inv],
+          totalOverdueAoa: inv.balanceAoa,
+          oldestDueDate: inv.dueDate,
+          maxDaysOverdue: days
+        });
+      } else {
+        current.overdueInvoices.push(inv);
+        current.totalOverdueAoa += inv.balanceAoa;
+        if (inv.dueDate && (!current.oldestDueDate || inv.dueDate < current.oldestDueDate)) {
+          current.oldestDueDate = inv.dueDate;
+        }
+        if (days > current.maxDaysOverdue) current.maxDaysOverdue = days;
+      }
+    });
+
+    return Array.from(grouped.values())
+      .filter((entry) => {
+        if (!studentMatchesHierarchy(entry.student)) return false;
+        if (!q) return true;
+        const meta = resolveStudentHierarchy(entry.student);
+        return (
+          entry.student.fullName.toLowerCase().includes(q) ||
+          entry.student.processNumber.toLowerCase().includes(q) ||
+          entry.student.guardianName.toLowerCase().includes(q) ||
+          meta.className.toLowerCase().includes(q) ||
+          meta.subsystemLabel.toLowerCase().includes(q) ||
+          entry.overdueInvoices.some((i) => i.monthReference.toLowerCase().includes(q))
+        );
+      })
+      .sort((a, b) => b.totalOverdueAoa - a.totalOverdueAoa);
+  }, [instInvoices, studentById, subsystemFilter, classFilter, studentFilter, monthFilter, searchTerm, todayIso]);
+
+  const totalOverdueStudentsCount = useMemo(() => {
+    const ids = new Set<string>();
+    instInvoices.forEach((inv) => {
+      if (isInvoiceOverdue(inv)) ids.add(inv.studentId);
+    });
+    return ids.size;
+  }, [instInvoices, todayIso]);
 
   const totalBilled = instInvoices.reduce((sum, inv) => sum + inv.totalAoa, 0);
   const totalPaid = instInvoices.reduce((sum, inv) => sum + inv.amountPaidAoa, 0);
@@ -248,28 +579,34 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
 
   const openRegisterModal = (
     category: FinancialCategory = 'propina',
-    studentId?: string
+    studentId?: string,
+    presetMonth?: { label: string; defaultDue: string; markPaid?: boolean }
   ) => {
     if (!guardTreasurerAction()) return;
-    const targetStu = instStudents.find((s) => s.id === (studentId || regStudentId)) || instStudents[0];
+    const targetStu =
+      instStudents.find((s) => s.id === (studentId || (studentFilter !== 'todos' ? studentFilter : regStudentId))) ||
+      instStudents[0];
     setRegCategory(category);
     if (targetStu) setRegStudentId(targetStu.id);
 
     if (category === 'propina') {
       setRegDescription(`Propina Mensal${targetStu ? ` - ${targetStu.gradeLevel}` : ''}`);
-      setRegMonth('Dezembro/2026');
+      setRegMonth(presetMonth?.label || 'Dezembro/2026');
+      setRegDueDate(presetMonth?.defaultDue || '2026-12-10');
       setRegAmount(targetStu?.subsystemCode === 'primario_geral' ? 35000 : 48000);
-      setRegMarkPaid(false);
+      setRegMarkPaid(Boolean(presetMonth?.markPaid));
     } else if (category === 'matricula') {
       setRegDescription(`Taxa de Matrícula Anual${targetStu ? ` - ${targetStu.gradeLevel}` : ''}`);
       setRegMonth('Ano Lectivo 2026/2027');
+      setRegDueDate('2026-09-15');
       setRegAmount(targetStu?.enrollmentAmountAoa || 15000);
       setRegMarkPaid(true);
     } else {
       setRegDescription('Emolumento: Declaração Escolar c/ Notas');
-      setRegMonth('Novembro/2026');
+      setRegMonth(presetMonth?.label || 'Novembro/2026');
+      setRegDueDate(presetMonth?.defaultDue || todayIso);
       setRegAmount(5000);
-      setRegMarkPaid(false);
+      setRegMarkPaid(Boolean(presetMonth?.markPaid));
     }
     setRegRef(`MCX-${Math.floor(100000 + Math.random() * 900000)}`);
     setRegSendNotif(true);
@@ -297,10 +634,10 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       showToast(
         'success',
         `Pagamento de ${formatKwanza(payAmount)} registado pelo Tesoureiro.${
-          paySendNotif ? ' Notificação enviada ao Aluno/Encarregado.' : ''
+          paySendNotif ? ' Notificação registada para Aluno/Encarregado.' : ''
         }`
       );
-    }, 300);
+    }, 250);
   };
 
   const handleCreateFinancialRecord = (e: React.FormEvent) => {
@@ -324,7 +661,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       setIsRegisterModalOpen(false);
       showToast(
         'success',
-        `Registo de Matrícula de ${st.fullName} (${formatKwanza(regAmount)}) gravado com sucesso pelo Tesoureiro.`
+        `Pagamento da Taxa de Matrícula de ${st.fullName} (${formatKwanza(regAmount)}) gravado com sucesso.`
       );
       return;
     }
@@ -349,10 +686,10 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       amountPaidAoa: regMarkPaid ? amountNum : 0,
       balanceAoa: regMarkPaid ? 0 : amountNum,
       dueDate: regDueDate,
-      status: regMarkPaid ? 'pago' : 'pendente',
+      status: regMarkPaid ? 'pago' : regDueDate < todayIso ? 'vencido' : 'pendente',
       multicaixaReference: mcxRef,
       multicaixaEntity: currentInstitution.bankAccount?.multicaixaEntity || '00142',
-      paidAt: regMarkPaid ? new Date().toISOString().split('T')[0] : undefined,
+      paidAt: regMarkPaid ? todayIso : undefined,
       paymentMethod: regMarkPaid ? regMethod : undefined,
       receiptNumber: regMarkPaid ? `RC-${nowTs.toString().slice(-6)}` : undefined
     };
@@ -361,94 +698,159 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
     setIsRegisterModalOpen(false);
     showToast(
       'success',
-      `${categoryBadge(regCategory).label} registada para ${st.fullName}.${
-        regSendNotif ? ' Notificação enviada ao Aluno/Encarregado.' : ''
+      `${categoryBadge(regCategory).label} (${regMonth}) registada para ${st.fullName}.${
+        regSendNotif ? ' Comunicado registado para Aluno/Encarregado.' : ''
       }`
     );
   };
 
-  const buildDefaultNotifMessage = (
+  // Gerador de Mensagens Pré-Elaboradas para Cobranças (com dados reais do aluno/turma/subsistema)
+  const buildTemplateMessage = (
+    templateId: MessageTemplateOption['id'],
     student: Student | undefined,
-    type: FinancialNotificationType,
     inv?: Invoice
-  ) => {
-    if (!student) return '';
+  ): { title: string; message: string; notifType: FinancialNotificationType } => {
+    if (!student) {
+      return {
+        title: 'Comunicado de Tesouraria',
+        message: '',
+        notifType: 'cobranca_pendente'
+      };
+    }
+
+    const meta = resolveStudentHierarchy(student);
     const entity = currentInstitution.bankAccount?.multicaixaEntity || '00142';
     const stuPending = instInvoices.filter(
-      (i) => i.studentId === student.id && i.status !== 'pago'
+      (i) => i.studentId === student.id && i.status !== 'pago' && i.balanceAoa > 0
     );
+    const stuOverdue = stuPending.filter((i) => isInvoiceOverdue(i));
     const totalPending = stuPending.reduce((sum, i) => sum + i.balanceAoa, 0);
+    const totalOverdue = stuOverdue.reduce((sum, i) => sum + i.balanceAoa, 0);
+    const targetRef =
+      inv?.multicaixaReference ||
+      stuOverdue[0]?.multicaixaReference ||
+      stuPending[0]?.multicaixaReference ||
+      '482 910 230';
 
-    if (inv) {
-      if (inv.status === 'pago') {
-        return `Estimado(a) Encarregado(a) ${student.guardianName}, confirmamos a recepção do pagamento de ${formatKwanza(
-          inv.amountPaidAoa
-        )} referente a "${inv.description}" (${inv.monthReference}) do estudante ${
-          student.fullName
-        } (Recibo ${inv.receiptNumber || inv.invoiceNumber}).`;
-      }
-      return `Estimado(a) Encarregado(a) ${student.guardianName}, informamos que se encontra ${
-        inv.status === 'vencido' ? 'vencido' : 'pendente'
-      } o pagamento de "${inv.description}" (${inv.monthReference}) do estudante ${
-        student.fullName
-      } no valor de ${formatKwanza(inv.balanceAoa)}. Entidade Multicaixa: ${entity} · Referência: ${
-        inv.multicaixaReference || '482 910 230'
-      } · Vencimento: ${inv.dueDate}.`;
+    if (templateId === 'confirmacao_recibo') {
+      const paidInv =
+        inv && inv.status === 'pago'
+          ? inv
+          : instInvoices.find((i) => i.studentId === student.id && i.status === 'pago');
+      return {
+        title: `Confirmação de Pagamento (${paidInv?.receiptNumber || 'Tesouraria'})`,
+        notifType: 'confirmacao_pagamento',
+        message: paidInv
+          ? `Caro(a) Encarregado(a) ${student.guardianName}, a Tesouraria da ${currentInstitution.name} confirma a recepção de ${formatKwanza(
+              paidInv.amountPaidAoa
+            )} referente a "${paidInv.description}" (${paidInv.monthReference}) do(a) estudante ${
+              student.fullName
+            } (${meta.className} · ${meta.subsystemLabel}). Recibo Nº: ${
+              paidInv.receiptNumber || paidInv.invoiceNumber
+            }. Obrigado pela colaboração.`
+          : `Caro(a) Encarregado(a) ${student.guardianName}, a situação financeira do(a) estudante ${student.fullName} (${meta.className} · ${meta.subsystemLabel}) encontra-se regularizada na Tesouraria da ${currentInstitution.name}.`
+      };
     }
 
-    if (type === 'confirmacao_matricula') {
-      return `Estimado(a) Encarregado(a) ${student.guardianName}, a Tesouraria confirma a regularização da Taxa de Matrícula 2026/2027 do(a) estudante ${student.fullName} (${student.className}).`;
+    if (templateId === 'outros_emolumentos') {
+      const otherInv =
+        inv ||
+        stuPending.find((i) => inferCategory(i) === 'outros') ||
+        stuPending[0];
+      return {
+        title: otherInv
+          ? `Cobrança de Emolumento: ${otherInv.description}`
+          : 'Aviso de Emolumentos / Taxas Escolares',
+        notifType: 'emolumento_outros',
+        message: otherInv
+          ? `Estimado(a) Encarregado(a) ${student.guardianName}, informamos que se encontra em aberto na Tesouraria da ${currentInstitution.name} o pagamento de "${otherInv.description}" (${otherInv.monthReference}) do(a) aluno(a) ${student.fullName} (${meta.className}), no valor de ${formatKwanza(
+              otherInv.balanceAoa
+            )}. Entidade Multicaixa: ${entity} · Referência: ${
+              otherInv.multicaixaReference || targetRef
+            } · Vencimento: ${otherInv.dueDate}.`
+          : `Estimado(a) Encarregado(a) ${student.guardianName}, solicitamos a regularização da Taxa/Emolumento escolar (${formatKwanza(
+              student.enrollmentAmountAoa || 15000
+            )}) do(a) estudante ${student.fullName} (${meta.className} · ${meta.subsystemLabel}) junto da Tesouraria da ${currentInstitution.name}.`
+      };
     }
 
-    if (type === 'cobranca_pendente' && !student.enrollmentFeePaid) {
-      return `Estimado(a) Encarregado(a) ${student.guardianName}, lembramos que a Taxa de Matrícula (${formatKwanza(
-        student.enrollmentAmountAoa || 15000
-      )}) do(a) estudante ${student.fullName} (${student.className}) encontra-se pendente de registo na Tesouraria.`;
+    if (templateId === 'atraso_urgente') {
+      const targetInvoices = stuOverdue.length > 0 ? stuOverdue : stuPending;
+      const monthsText =
+        inv && inv.status !== 'pago'
+          ? `${inv.description} (${inv.monthReference})`
+          : targetInvoices.length > 0
+          ? targetInvoices.map((i) => i.monthReference).join(', ')
+          : 'Mensalidades em atraso';
+      const amountDue =
+        inv && inv.status !== 'pago'
+          ? inv.balanceAoa
+          : totalOverdue > 0
+          ? totalOverdue
+          : totalPending;
+      const days = getDaysOverdue(inv?.dueDate || stuOverdue[0]?.dueDate);
+
+      return {
+        title: `Aviso de Propina em Atraso — ${student.fullName}`,
+        notifType: 'aviso_atraso',
+        message: `Estimado(a) Encarregado(a) ${student.guardianName}, a Tesouraria da ${currentInstitution.name} comunica que o(a) estudante ${student.fullName} (Proc. ${student.processNumber} · ${meta.className} · ${meta.subsystemLabel}) possui valores vencidos em atraso${
+          days > 0 ? ` há ${days} dia(s)` : ''
+        }, referente a: ${monthsText}, no montante total de ${formatKwanza(
+          amountDue
+        )}. Solicitamos a regularização urgente via Multicaixa (Entidade: ${entity} · Ref.: ${targetRef}) ou presencialmente na Tesouraria.`
+      };
     }
 
-    if (totalPending > 0) {
-      return `Estimado(a) Encarregado(a) ${student.guardianName}, o estudante ${
-        student.fullName
-      } (Proc. ${student.processNumber}) possui ${
-        stuPending.length
-      } factura(s) em aberto na Tesouraria totalizando ${formatKwanza(
-        totalPending
-      )}. Agradecemos a regularização via Multicaixa (Entidade ${entity}) ou presencialmente na Tesouraria.`;
-    }
-
-    return `Estimado(a) Encarregado(a) ${student.guardianName}, a situação financeira do(a) estudante ${student.fullName} encontra-se regularizada junto da Tesouraria da ${currentInstitution.name}.`;
+    // lembrete_amigavel
+    const dueInv = inv || stuPending[0];
+    return {
+      title: dueInv
+        ? `Lembrete de Pagamento: ${dueInv.monthReference}`
+        : `Lembrete de Propina — ${student.fullName}`,
+      notifType: 'cobranca_pendente',
+      message: dueInv
+        ? `Estimado(a) Encarregado(a) ${student.guardianName}, lembramos que a "${dueInv.description}" (${dueInv.monthReference}) do(a) estudante ${student.fullName} (${meta.className} · ${meta.subsystemLabel}) no valor de ${formatKwanza(
+            dueInv.balanceAoa
+          )} vence em ${dueInv.dueDate}. Pagamento via Multicaixa: Entidade ${entity} · Referência: ${
+            dueInv.multicaixaReference || targetRef
+          }.`
+        : `Estimado(a) Encarregado(a) ${student.guardianName}, este é um lembrete amigável da Tesouraria da ${currentInstitution.name} referente às propinas do(a) estudante ${student.fullName} (${meta.className}).`
+    };
   };
 
   const openNotificationModalFor = (
     student?: Student,
     invoice?: Invoice,
-    type: FinancialNotificationType = 'cobranca_pendente'
+    preferredTemplate?: MessageTemplateOption['id']
   ) => {
     if (!guardTreasurerAction()) return;
-    const targetStu = student || instStudents[0];
+    const targetStu =
+      student ||
+      (studentFilter !== 'todos' ? instStudents.find((s) => s.id === studentFilter) : undefined) ||
+      instStudents[0];
+
+    const autoTemplate: MessageTemplateOption['id'] =
+      preferredTemplate ||
+      (invoice?.status === 'pago'
+        ? 'confirmacao_recibo'
+        : invoice && isInvoiceOverdue(invoice)
+        ? 'atraso_urgente'
+        : invoice && inferCategory(invoice) === 'outros'
+        ? 'outros_emolumentos'
+        : targetStu && instInvoices.some((i) => i.studentId === targetStu.id && isInvoiceOverdue(i))
+        ? 'atraso_urgente'
+        : 'lembrete_amigavel');
+
+    const built = buildTemplateMessage(autoTemplate, targetStu, invoice);
+
     setNotifMode('individual');
     if (targetStu) setNotifStudentId(targetStu.id);
     setNotifInvoiceId(invoice?.id);
-    const resolvedType =
-      invoice?.status === 'vencido'
-        ? 'aviso_atraso'
-        : invoice?.status === 'pago'
-        ? 'confirmacao_pagamento'
-        : type;
-    setNotifType(resolvedType);
+    setSelectedTemplateId(autoTemplate);
+    setNotifType(built.notifType);
     setNotifTarget('ambos');
-    setNotifTitle(
-      invoice
-        ? invoice.status === 'vencido'
-          ? `Aviso de Atraso: ${invoice.description}`
-          : invoice.status === 'pago'
-          ? `Comprovativo de Liquidação: ${invoice.description}`
-          : `Lembrete de Pagamento: ${invoice.description}`
-        : type === 'confirmacao_matricula'
-        ? 'Confirmação da Taxa de Matrícula'
-        : 'Comunicação da Situação Financeira'
-    );
-    setNotifMessage(buildDefaultNotifMessage(targetStu, resolvedType, invoice));
+    setNotifTitle(built.title);
+    setNotifMessage(built.message);
     setIsNotifModalOpen(true);
   };
 
@@ -458,21 +860,23 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
 
     if (notifMode === 'lote_dividas') {
       const entity = currentInstitution.bankAccount?.multicaixaEntity || '00142';
-      const debtorInvoices = instInvoices.filter((i) => i.status !== 'pago');
-      const unpaidEnrollStudents = instStudents.filter((s) => !s.enrollmentFeePaid);
+      const debtorInvoices = instInvoices.filter(
+        (i) => i.status !== 'pago' && i.balanceAoa > 0 && studentMatchesHierarchy(studentById.get(i.studentId))
+      );
       const items: SendFinancialNotificationInput[] = [];
-
       const processedStudents = new Set<string>();
+
       debtorInvoices.forEach((inv) => {
         if (processedStudents.has(inv.studentId)) return;
-        const stu = instStudents.find((s) => s.id === inv.studentId);
+        const stu = studentById.get(inv.studentId);
         if (!stu) return;
         processedStudents.add(stu.id);
+        const meta = resolveStudentHierarchy(stu);
         const stuTotal = debtorInvoices
           .filter((d) => d.studentId === stu.id)
           .reduce((sum, d) => sum + d.balanceAoa, 0);
         const hasOverdue = debtorInvoices.some(
-          (d) => d.studentId === stu.id && d.status === 'vencido'
+          (d) => d.studentId === stu.id && isInvoiceOverdue(d)
         );
         items.push({
           studentId: stu.id,
@@ -480,11 +884,11 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           type: hasOverdue ? 'aviso_atraso' : 'cobranca_pendente',
           category: inferCategory(inv),
           title: hasOverdue
-            ? 'Aviso Urgente de Mensalidades Vencidas'
-            : 'Lembrete de Situação Financeira Pendente',
+            ? 'Aviso Urgente de Propinas em Atraso'
+            : 'Lembrete de Pagamento Pendente',
           message: `Estimado(a) Encarregado(a) ${stu.guardianName}, o estudante ${
             stu.fullName
-          } possui valores pendentes na Tesouraria no total de ${formatKwanza(
+          } (${meta.className} · ${meta.subsystemLabel}) possui valores em aberto na Tesouraria totalizando ${formatKwanza(
             stuTotal
           )}. Entidade Multicaixa: ${entity} · Ref. principal: ${
             inv.multicaixaReference || '482 910 230'
@@ -497,23 +901,8 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
         });
       });
 
-      unpaidEnrollStudents.forEach((stu) => {
-        if (processedStudents.has(stu.id)) return;
-        items.push({
-          studentId: stu.id,
-          recipientTarget: notifTarget,
-          type: 'cobranca_pendente',
-          category: 'matricula',
-          title: 'Taxa de Matrícula Pendente na Tesouraria',
-          message: `Estimado(a) Encarregado(a) ${stu.guardianName}, solicitamos a regularização da Taxa de Matrícula (${formatKwanza(
-            stu.enrollmentAmountAoa || 15000
-          )}) do(a) estudante ${stu.fullName} junto da Tesouraria.`,
-          amountAoa: stu.enrollmentAmountAoa || 15000
-        });
-      });
-
       if (items.length === 0) {
-        showToast('error', 'Não existem alunos com propinas ou matrículas pendentes neste momento.');
+        showToast('error', 'Não existem alunos com valores pendentes ou em atraso para o filtro actual.');
         return;
       }
 
@@ -521,7 +910,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       setIsNotifModalOpen(false);
       showToast(
         'success',
-        `Notificações financeiras enviadas em lote para ${items.length} aluno(s) e encarregado(s).`
+        `Comunicados de cobrança registados para ${items.length} aluno(s) e encarregado(s).`
       );
       return;
     }
@@ -536,7 +925,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
         recipientTarget: notifTarget,
         type: notifType,
         category: inv ? inferCategory(inv) : undefined,
-        title: notifTitle.trim() || 'Notificação Financeira',
+        title: notifTitle.trim() || 'Comunicado de Cobrança',
         message: notifMessage.trim(),
         amountAoa: inv?.balanceAoa || inv?.totalAoa,
         invoiceId: inv?.id,
@@ -548,9 +937,126 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
     setIsNotifModalOpen(false);
     showToast(
       'success',
-      `Notificação enviada para ${stu.fullName} e encarregado (${stu.guardianName}).`
+      `Comunicado registado no sistema para ${stu.fullName} e encarregado (${stu.guardianName}).`
     );
   };
+
+  // Telefones do estudante seleccionado no modal de comunicado/cobrança
+  const activeModalStudent = useMemo(
+    () => instStudents.find((s) => s.id === notifStudentId) || instStudents[0],
+    [instStudents, notifStudentId]
+  );
+  const guardianPhoneMeta = normalizeAngolaPhone(activeModalStudent?.guardianPhone);
+  const studentPhoneMeta = normalizeAngolaPhone(activeModalStudent?.phone);
+
+  // Barra reutilizável de Filtros Hierárquicos (Subsistema -> Turma -> Aluno -> Mês)
+  const renderHierarchyFilterBar = (showMonthSelect = true) => (
+    <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-bold text-[#064e26]">
+          <Filter className="w-4 h-4 text-[#067836]" />
+          <span>Controlo por Subsistema · Turma · Aluno · Mês</span>
+        </div>
+        {(subsystemFilter !== 'todos' ||
+          classFilter !== 'todas' ||
+          studentFilter !== 'todos' ||
+          monthFilter !== 'todos' ||
+          searchTerm !== '') && (
+          <button
+            type="button"
+            onClick={resetHierarchyFilters}
+            className="inline-flex items-center gap-1 text-[11px] font-bold text-[#067836] hover:bg-[#eaf6ee] px-2.5 py-1 rounded-lg border border-[#cde6d5] cursor-pointer"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Limpar Filtros</span>
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 text-xs">
+        {/* Pesquisa livre */}
+        <div className="relative">
+          <Search className="w-4 h-4 text-[#067836] absolute left-3 top-2.5" />
+          <input
+            type="text"
+            placeholder="Pesquisar aluno, proc., factura..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-[#f7fbf8] text-slate-800 text-xs rounded-xl pl-9 pr-3 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-medium"
+          />
+        </div>
+
+        {/* Subsistema por Subsistema */}
+        <select
+          aria-label="Filtrar por Subsistema"
+          value={subsystemFilter}
+          onChange={(e) => {
+            setSubsystemFilter(e.target.value as 'todos' | EducationSubsystemCode);
+            setClassFilter('todas');
+            setStudentFilter('todos');
+          }}
+          className="bg-[#f7fbf8] text-slate-800 text-xs rounded-xl px-3 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-semibold"
+        >
+          <option value="todos">Todos os Subsistemas ({availableSubsystems.length})</option>
+          {availableSubsystems.map((sub) => (
+            <option key={sub.code} value={sub.code}>
+              {sub.shortName} · {sub.name}
+            </option>
+          ))}
+        </select>
+
+        {/* Turma por Turma */}
+        <select
+          aria-label="Filtrar por Turma"
+          value={classFilter}
+          onChange={(e) => {
+            setClassFilter(e.target.value);
+            setStudentFilter('todos');
+          }}
+          className="bg-[#f7fbf8] text-slate-800 text-xs rounded-xl px-3 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-semibold"
+        >
+          <option value="todas">Todas as Turmas ({filteredClassOptions.length})</option>
+          {filteredClassOptions.map((cls) => (
+            <option key={cls.id} value={cls.id}>
+              {cls.name} ({cls.gradeLevel})
+            </option>
+          ))}
+        </select>
+
+        {/* Aluno por Aluno */}
+        <select
+          aria-label="Filtrar Aluno por Aluno"
+          value={studentFilter}
+          onChange={(e) => setStudentFilter(e.target.value)}
+          className="bg-[#f7fbf8] text-slate-800 text-xs rounded-xl px-3 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-semibold"
+        >
+          <option value="todos">Todos os Alunos ({filteredStudentOptions.length})</option>
+          {filteredStudentOptions.map((stu) => (
+            <option key={stu.id} value={stu.id}>
+              {stu.fullName} ({stu.processNumber})
+            </option>
+          ))}
+        </select>
+
+        {/* Mês de Referência */}
+        {showMonthSelect && (
+          <select
+            aria-label="Filtrar por Mês"
+            value={monthFilter}
+            onChange={(e) => setMonthFilter(e.target.value)}
+            className="bg-[#f7fbf8] text-slate-800 text-xs rounded-xl px-3 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-semibold"
+          >
+            <option value="todos">Todos os Meses</option>
+            {ACADEMIC_MONTHS.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -558,10 +1064,11 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3 border-b border-[#dce7df]">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-[#064e26] tracking-tight">
-            Tesouraria &amp; Finanças Escolares (AOA)
+            Tesouraria &amp; Controlo Financeiro Escolar (AOA)
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Propinas, Matrículas, Outros Emolumentos e Notificações Financeiras · {currentInstitution.name}
+            Propinas, Outros Pagamentos, Controlo Mensal, Alunos em Atraso &amp; Cobranças WhatsApp/SMS ·{' '}
+            {currentInstitution.name}
           </p>
         </div>
 
@@ -569,7 +1076,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           <button
             type="button"
             disabled={!isTreasurer}
-            onClick={() => openNotificationModalFor(instStudents[0], undefined, 'cobranca_pendente')}
+            onClick={() => openNotificationModalFor(undefined, undefined, 'atraso_urgente')}
             className={`inline-flex items-center space-x-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border transition ${
               isTreasurer
                 ? 'bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border-[#cde6d5] cursor-pointer shadow-2xs'
@@ -577,12 +1084,12 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             }`}
             title={
               isTreasurer
-                ? 'Enviar notificação financeira aos alunos ou encarregados'
+                ? 'Enviar comunicado pré-elaborado com redireccionamento WhatsApp / SMS'
                 : 'Acção exclusiva do Tesoureiro'
             }
           >
-            <Bell className="w-4 h-4" />
-            <span>Notificar Alunos / Encarregados</span>
+            <MessageCircle className="w-4 h-4" />
+            <span>Comunicados &amp; WhatsApp/SMS</span>
           </button>
 
           <button
@@ -596,33 +1103,34 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             }`}
             title={
               isTreasurer
-                ? 'Registar Propina, Matrícula ou Outro Pagamento'
+                ? 'Registar Pagamento de Propina ou Outros Emolumentos'
                 : 'Registo exclusivo do Tesoureiro'
             }
           >
             {isTreasurer ? <Plus className="w-4 h-4" /> : <Lock className="w-3.5 h-3.5" />}
-            <span>Registar Finança</span>
+            <span>Registar Pagamento</span>
           </button>
         </div>
       </div>
 
-      {/* BANNER RBAC EXCLUSIVO DO TESOUREIRO */}
+      {/* BANNER RBAC DO TESOUREIRO */}
       {isTreasurer ? (
         <div className="bg-[#eaf6ee] border border-[#cde6d5] rounded-2xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#064e26]">
           <div className="flex items-center gap-2.5">
             <ShieldCheck className="w-5 h-5 text-[#067836] shrink-0" />
             <div>
               <strong className="font-bold block sm:inline">
-                Perfil Tesoureiro Activo — Registo Financeiro Exclusivo:
+                Perfil Tesoureiro Activo — Controlo Financeiro &amp; Cobranças:
               </strong>{' '}
               <span>
-                Tem permissão exclusiva para registar propinas, taxas de matrícula, outros emolumentos,
-                liquidar facturas e enviar notificações financeiras aos alunos e encarregados.
+                Pode registar propinas e outros pagamentos, controlar mensalidades por aluno, turma e
+                subsistema, acompanhar atrasos e enviar comunicados via WhatsApp ou SMS. Criação de
+                turmas, matrículas e cadastro de utilizadores permanecem exclusivos da Administração.
               </span>
             </div>
           </div>
           <span className="inline-flex items-center gap-1 bg-white border border-[#cde6d5] text-[#067836] font-bold px-2.5 py-1 rounded-xl whitespace-nowrap self-start sm:self-auto">
-            Responsável Exclusivo
+            Tesouraria Exclusiva
           </span>
         </div>
       ) : (
@@ -630,10 +1138,9 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           <div className="flex items-center gap-2.5">
             <Lock className="w-5 h-5 text-amber-600 shrink-0" />
             <div>
-              <strong className="font-bold">Modo de Consulta Apenas:</strong> O registo de
-              finanças (propinas, matrículas e outros), liquidação de facturas e envio de
-              notificações aos alunos ou encarregados é da responsabilidade exclusiva do{' '}
-              <strong>Tesoureiro</strong>.
+              <strong className="font-bold">Modo de Consulta Apenas:</strong> O registo de pagamentos
+              (propinas e outros), liquidação de facturas e envio de cobranças aos alunos ou
+              encarregados é responsabilidade exclusiva do <strong>Tesoureiro</strong>.
             </div>
           </div>
           <span className="inline-flex items-center gap-1 bg-white border border-amber-200 text-amber-800 font-semibold px-2.5 py-1 rounded-xl whitespace-nowrap self-start sm:self-auto">
@@ -679,7 +1186,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
               {formatKwanza(totalBilled)}
             </div>
             <span className="text-[11px] text-slate-500 block mt-0.5 truncate">
-              {countByCat.propina} prop. · {countByCat.matricula} matr. · {countByCat.outros} out.
+              {countByCat.propina} prop. · {countByCat.matricula} tax. · {countByCat.outros} out.
             </span>
           </div>
         </div>
@@ -699,18 +1206,21 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-[#dce7df] p-4 shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-full bg-[#f5a623] text-white flex items-center justify-center shrink-0 shadow-xs">
+        <div
+          onClick={() => setActiveSection('atrasos')}
+          className="bg-white rounded-2xl border border-[#dce7df] hover:border-red-300 p-4 shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex items-center gap-3.5 cursor-pointer transition"
+          title="Clique para visualizar os alunos em atraso"
+        >
+          <div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center shrink-0 shadow-xs">
             <AlertTriangle className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <span className="text-xs font-medium text-slate-500 block">Valores em Dívida</span>
+            <span className="text-xs font-medium text-slate-500 block">Valores em Atraso / Dívida</span>
             <div className="font-display text-lg sm:text-xl font-extrabold text-slate-900 tabular-nums mt-0.5 truncate">
               {formatKwanza(totalOutstanding)}
             </div>
-            <span className="text-[11px] text-red-600 font-medium block mt-0.5">
-              {instInvoices.filter((i) => i.status === 'vencido').length} vencida(s) ·{' '}
-              {instInvoices.filter((i) => i.status === 'pendente').length} pendente(s)
+            <span className="text-[11px] text-red-600 font-bold block mt-0.5">
+              {totalOverdueStudentsCount} aluno(s) em atraso · Ver lista →
             </span>
           </div>
         </div>
@@ -720,12 +1230,12 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             <Bell className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <span className="text-xs font-medium text-slate-500 block">Notificações Enviadas</span>
+            <span className="text-xs font-medium text-slate-500 block">Comunicados Enviados</span>
             <div className="font-display text-xl sm:text-2xl font-extrabold text-slate-900 tabular-nums mt-0.5">
               {instNotifications.length}
             </div>
             <span className="text-[11px] text-slate-500 block mt-0.5">
-              {instNotifications.filter((n) => n.isRead).length} lida(s) ·{' '}
+              {instNotifications.filter((n) => n.isRead).length} lido(s) ·{' '}
               {instNotifications.filter((n) => !n.isRead).length} por ler
             </span>
           </div>
@@ -738,20 +1248,46 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           <button
             type="button"
             onClick={() => setActiveSection('lancamentos')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
               activeSection === 'lancamentos'
                 ? 'bg-gradient-to-r from-[#067836] to-[#149a45] text-white shadow-2xs'
                 : 'text-slate-600 hover:bg-[#eaf6ee] hover:text-[#067836]'
             }`}
           >
             <Receipt className="w-4 h-4" />
-            <span>Propinas, Matrículas &amp; Outros ({instInvoices.length})</span>
+            <span>Propinas &amp; Outros ({instInvoices.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('controlo_mensal')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+              activeSection === 'controlo_mensal'
+                ? 'bg-gradient-to-r from-[#067836] to-[#149a45] text-white shadow-2xs'
+                : 'text-slate-600 hover:bg-[#eaf6ee] hover:text-[#067836]'
+            }`}
+          >
+            <CalendarDays className="w-4 h-4" />
+            <span>Controlo Mensal ({instStudents.length} alunos)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('atrasos')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+              activeSection === 'atrasos'
+                ? 'bg-red-600 text-white shadow-2xs'
+                : 'text-red-700 bg-red-50/70 hover:bg-red-100'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" />
+            <span>Alunos em Atraso ({totalOverdueStudentsCount})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveSection('matriculas')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
               activeSection === 'matriculas'
                 ? 'bg-gradient-to-r from-[#067836] to-[#149a45] text-white shadow-2xs'
                 : 'text-slate-600 hover:bg-[#eaf6ee] hover:text-[#067836]'
@@ -759,134 +1295,133 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
           >
             <GraduationCap className="w-4 h-4" />
             <span>
-              Controlo de Matrículas ({instStudents.filter((s) => !s.enrollmentFeePaid).length} pendentes)
+              Taxas de Matrícula ({instStudents.filter((s) => !s.enrollmentFeePaid).length} pendentes)
             </span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveSection('notificacoes')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
               activeSection === 'notificacoes'
                 ? 'bg-gradient-to-r from-[#067836] to-[#149a45] text-white shadow-2xs'
                 : 'text-slate-600 hover:bg-[#eaf6ee] hover:text-[#067836]'
             }`}
           >
-            <Bell className="w-4 h-4" />
-            <span>Notificações a Alunos &amp; Encarregados ({instNotifications.length})</span>
+            <MessageCircle className="w-4 h-4" />
+            <span>Comunicados &amp; Cobranças ({instNotifications.length})</span>
           </button>
         </div>
       </div>
 
       {/* =========================================================
-          SECÇÃO 1: LANÇAMENTOS (PROPINAS, MATRÍCULAS E OUTROS)
+          SECÇÃO 1: PROPINAS & OUTROS PAGAMENTOS (FILTRADO POR SUBSISTEMA / TURMA / ALUNO / MÊS)
           ========================================================= */}
       {activeSection === 'lancamentos' && (
         <>
-          <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex flex-col xl:flex-row justify-between items-stretch xl:items-center gap-3">
-            <div className="relative w-full xl:w-80">
-              <Search className="w-4 h-4 text-[#067836] absolute left-3 top-2.5" />
-              <input
-                type="text"
-                placeholder="Pesquisar por aluno, processo, descrição ou factura..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-[#f7fbf8] text-slate-800 text-xs sm:text-sm rounded-xl pl-9 pr-4 py-2 border border-[#cde6d5] focus:outline-none focus:border-[#067836] font-medium"
-              />
+          {renderHierarchyFilterBar(true)}
+
+          <div className="bg-white rounded-2xl p-3 border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] flex flex-wrap items-center justify-between gap-2">
+            {/* Filtro por Categoria Financeira */}
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-[#f3f7f4] border border-[#dce7df] rounded-xl text-xs font-semibold">
+              {(
+                [
+                  { id: 'todas', label: 'Todas Categorias' },
+                  { id: 'propina', label: `Propinas (${countByCat.propina})` },
+                  { id: 'outros', label: `Outros (${countByCat.outros})` },
+                  { id: 'matricula', label: `Taxas Matrícula (${countByCat.matricula})` }
+                ] as const
+              ).map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setCategoryFilter(cat.id)}
+                  className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
+                    categoryFilter === cat.id
+                      ? 'bg-white text-[#067836] shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Filtro por Categoria Financeira */}
-              <div className="flex flex-wrap items-center gap-1 p-1 bg-[#f3f7f4] border border-[#dce7df] rounded-xl text-xs font-semibold">
-                {(
-                  [
-                    { id: 'todas', label: 'Todas Categorias' },
-                    { id: 'propina', label: `Propinas (${countByCat.propina})` },
-                    { id: 'matricula', label: `Matrículas (${countByCat.matricula})` },
-                    { id: 'outros', label: `Outros (${countByCat.outros})` }
-                  ] as const
-                ).map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => setCategoryFilter(cat.id)}
-                    className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
-                      categoryFilter === cat.id
-                        ? 'bg-white text-[#067836] shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Filtro por Estado */}
-              <div className="flex flex-wrap items-center gap-1 p-1 bg-[#f3f7f4] border border-[#dce7df] rounded-xl text-xs font-semibold">
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('todos')}
-                  className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
-                    statusFilter === 'todos' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  Todos ({instInvoices.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('pago')}
-                  className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
-                    statusFilter === 'pago' ? 'bg-white text-[#067836] shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  Pagos
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('pendente')}
-                  className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
-                    statusFilter === 'pendente' ? 'bg-white text-amber-700 shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  Pendentes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('vencido')}
-                  className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
-                    statusFilter === 'vencido' ? 'bg-white text-red-700 shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  Vencidos
-                </button>
-              </div>
+            {/* Filtro por Estado */}
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-[#f3f7f4] border border-[#dce7df] rounded-xl text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('todos')}
+                className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
+                  statusFilter === 'todos' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
+                }`}
+              >
+                Todos ({instInvoices.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('pago')}
+                className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
+                  statusFilter === 'pago' ? 'bg-white text-[#067836] shadow-2xs' : 'text-slate-600'
+                }`}
+              >
+                Pagos
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('pendente')}
+                className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
+                  statusFilter === 'pendente' ? 'bg-white text-amber-700 shadow-2xs' : 'text-slate-600'
+                }`}
+              >
+                Pendentes
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('vencido')}
+                className={`px-2.5 py-1.5 rounded-lg transition cursor-pointer ${
+                  statusFilter === 'vencido' ? 'bg-white text-red-700 shadow-2xs' : 'text-slate-600'
+                }`}
+              >
+                Em Atraso
+              </button>
             </div>
           </div>
 
           <div className="bg-white rounded-2xl border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
-            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-3.5 sm:px-5 flex items-center justify-between">
+            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-3.5 sm:px-5 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-xs sm:text-sm font-bold flex items-center space-x-2">
                 <Receipt className="w-4 h-4" />
                 <span>Registos Financeiros da Instituição ({filteredInvoices.length})</span>
               </h2>
-              <span className="text-[11px] text-emerald-100 hidden sm:inline">
-                Registo exclusivo do Tesoureiro · Referências Multicaixa Express
-              </span>
-            </div>
-
-            <div className="md:hidden bg-[#eaf6ee] px-3 py-1.5 border-b border-[#cde6d5] flex items-center justify-between text-[11px] text-[#055827]">
-              <span>👉 Deslize horizontalmente para ver todas as colunas</span>
-              <span className="font-bold">↔</span>
+              {isTreasurer && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openRegisterModal('propina')}
+                    className="bg-white/15 hover:bg-white/25 text-white border border-white/25 text-[11px] font-bold px-2.5 py-1 rounded-lg cursor-pointer"
+                  >
+                    + Propina
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openRegisterModal('outros')}
+                    className="bg-white text-[#067836] hover:bg-[#eaf6ee] text-[11px] font-bold px-2.5 py-1 rounded-lg cursor-pointer"
+                  >
+                    + Outros Pagamentos
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse min-w-[960px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[1020px]">
                 <thead>
                   <tr className="bg-[#f7fbf8] text-slate-500 uppercase font-semibold border-b border-[#dce7df]">
                     <th className="py-3 px-4">Factura Nº</th>
                     <th className="py-3 px-4">Categoria</th>
-                    <th className="py-3 px-4">Aluno / Processo</th>
-                    <th className="py-3 px-4">Descrição / Referência</th>
+                    <th className="py-3 px-4">Aluno / Turma / Subsistema</th>
+                    <th className="py-3 px-4">Descrição / Mês</th>
                     <th className="py-3 px-4">Vencimento</th>
                     <th className="py-3 px-4 text-right">Total</th>
                     <th className="py-3 px-4 text-right">Em Dívida</th>
@@ -896,138 +1431,675 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {filteredInvoices.map((inv) => {
-                    const cat = inferCategory(inv);
-                    const badge = categoryBadge(cat);
-                    const stu = instStudents.find((s) => s.id === inv.studentId);
-                    return (
-                      <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-3 px-4 font-mono font-bold text-slate-900">
-                          {inv.invoiceNumber}
-                        </td>
+                  {filteredInvoices.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="py-10 text-center text-slate-500">
+                        Nenhum registo financeiro encontrado para os filtros seleccionados.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredInvoices.map((inv) => {
+                      const cat = inferCategory(inv);
+                      const badge = categoryBadge(cat);
+                      const stu = studentById.get(inv.studentId);
+                      const meta = resolveStudentHierarchy(stu);
+                      const overdue = isInvoiceOverdue(inv);
+                      const gPhone = normalizeAngolaPhone(stu?.guardianPhone);
+                      const quickMsg = buildTemplateMessage(
+                        overdue ? 'atraso_urgente' : 'lembrete_amigavel',
+                        stu,
+                        inv
+                      ).message;
 
-                        <td className="py-3 px-4">
-                          <span
-                            className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded border ${badge.classes}`}
-                          >
-                            {badge.label}
-                          </span>
-                        </td>
+                      return (
+                        <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                            {inv.invoiceNumber}
+                          </td>
 
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-slate-900">{inv.studentName}</div>
-                          <div className="font-mono text-[11px] text-slate-400">
-                            Proc: {inv.studentProcessNumber}
-                          </div>
-                        </td>
-
-                        <td className="py-3 px-4">
-                          <span className="font-semibold text-slate-800 block">{inv.description}</span>
-                          <span className="text-[11px] text-slate-500">
-                            {inv.monthReference}
-                            {inv.registeredByName ? ` · Por: ${inv.registeredByName}` : ''}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-4 text-slate-600 font-mono">{inv.dueDate}</td>
-
-                        <td className="py-3 px-4 text-right font-bold text-slate-900 tabular-nums">
-                          {formatKwanza(inv.totalAoa)}
-                        </td>
-
-                        <td className="py-3 px-4 text-right font-bold text-red-600 tabular-nums">
-                          {formatKwanza(inv.balanceAoa)}
-                        </td>
-
-                        <td className="py-3 px-4 text-center font-mono">
-                          <span className="bg-slate-100 px-2 py-0.5 rounded text-[11px] font-bold text-slate-800">
-                            {inv.multicaixaReference || generateMulticaixaReference(inv.id)}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-4 text-center">
-                          <span
-                            className={`inline-flex items-center space-x-1 text-xs font-semibold ${
-                              inv.status === 'pago'
-                                ? 'text-emerald-700'
-                                : inv.status === 'vencido'
-                                ? 'text-red-700'
-                                : 'text-amber-700'
-                            }`}
-                          >
+                          <td className="py-3 px-4">
                             <span
-                              className={`w-1.5 h-1.5 rounded-full ${
-                                inv.status === 'pago'
-                                  ? 'bg-emerald-500'
-                                  : inv.status === 'vencido'
-                                  ? 'bg-red-500'
-                                  : 'bg-amber-500'
-                              }`}
-                            />
-                            <span>
-                              {inv.status === 'pago'
-                                ? 'Pago'
-                                : inv.status === 'vencido'
-                                ? 'Vencido'
-                                : 'Pendente'}
+                              className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded border ${badge.classes}`}
+                            >
+                              {badge.label}
                             </span>
-                          </span>
-                        </td>
+                          </td>
 
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="inline-flex items-center gap-1.5">
-                            {inv.status !== 'pago' ? (
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-slate-900">{inv.studentName}</div>
+                            <div className="text-[11px] text-slate-500">
+                              <span className="font-mono">Proc: {inv.studentProcessNumber}</span> ·{' '}
+                              <span className="font-semibold text-slate-700">{meta.className}</span> ·{' '}
+                              <span className="text-[#067836] font-semibold">{meta.subsystemLabel}</span>
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <span className="font-semibold text-slate-800 block">{inv.description}</span>
+                            <span className="text-[11px] text-slate-500">
+                              {inv.monthReference}
+                              {inv.registeredByName ? ` · Por: ${inv.registeredByName}` : ''}
+                            </span>
+                          </td>
+
+                          <td className="py-3 px-4 text-slate-600 font-mono">
+                            <div>{inv.dueDate}</div>
+                            {overdue && (
+                              <span className="text-[10px] font-bold text-red-600">
+                                {getDaysOverdue(inv.dueDate)}d atraso
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-3 px-4 text-right font-bold text-slate-900 tabular-nums">
+                            {formatKwanza(inv.totalAoa)}
+                          </td>
+
+                          <td className="py-3 px-4 text-right font-bold text-red-600 tabular-nums">
+                            {formatKwanza(inv.balanceAoa)}
+                          </td>
+
+                          <td className="py-3 px-4 text-center font-mono">
+                            <span className="bg-slate-100 px-2 py-0.5 rounded text-[11px] font-bold text-slate-800">
+                              {inv.multicaixaReference || generateMulticaixaReference(inv.id)}
+                            </span>
+                          </td>
+
+                          <td className="py-3 px-4 text-center">
+                            <span
+                              className={`inline-flex items-center space-x-1 text-xs font-semibold ${
+                                inv.status === 'pago'
+                                  ? 'text-emerald-700'
+                                  : overdue
+                                  ? 'text-red-700'
+                                  : 'text-amber-700'
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  inv.status === 'pago'
+                                    ? 'bg-emerald-500'
+                                    : overdue
+                                    ? 'bg-red-500'
+                                    : 'bg-amber-500'
+                                }`}
+                              />
+                              <span>
+                                {inv.status === 'pago'
+                                  ? 'Pago'
+                                  : overdue
+                                  ? 'Em Atraso'
+                                  : 'Pendente'}
+                              </span>
+                            </span>
+                          </td>
+
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1.5">
+                              {inv.status !== 'pago' ? (
+                                <button
+                                  type="button"
+                                  disabled={!isTreasurer}
+                                  onClick={() => handleOpenPaymentModal(inv)}
+                                  className={`inline-flex items-center space-x-1 text-xs font-bold px-2.5 py-1.5 rounded-lg transition ${
+                                    isTreasurer
+                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs cursor-pointer'
+                                      : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                  }`}
+                                >
+                                  {isTreasurer ? (
+                                    <CreditCard className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <Lock className="w-3 h-3" />
+                                  )}
+                                  <span>Liquidar</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingReceiptInvoice(inv)}
+                                  className="inline-flex items-center space-x-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-300 transition cursor-pointer"
+                                  title="Ver Recibo Oficial com QR Code"
+                                >
+                                  <Receipt className="w-3.5 h-3.5 text-sky-600" />
+                                  <span>Recibo</span>
+                                </button>
+                              )}
+
+                              {isTreasurer && gPhone && inv.status !== 'pago' && (
+                                <a
+                                  href={buildWhatsAppHref(gPhone.waDigits, quickMsg)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition"
+                                  title={`Enviar cobrança via WhatsApp para Encarregado (${gPhone.display})`}
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+
                               <button
                                 type="button"
                                 disabled={!isTreasurer}
-                                onClick={() => handleOpenPaymentModal(inv)}
-                                className={`inline-flex items-center space-x-1 text-xs font-bold px-2.5 py-1.5 rounded-lg transition ${
+                                onClick={() => openNotificationModalFor(stu, inv)}
+                                className={`inline-flex items-center space-x-1 text-xs font-semibold px-2.5 py-1.5 rounded-xl border transition ${
                                   isTreasurer
-                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs cursor-pointer'
-                                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                    ? 'bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border-[#cde6d5] cursor-pointer'
+                                    : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed'
                                 }`}
-                                title={
-                                  isTreasurer
-                                    ? 'Registar liquidação da factura'
-                                    : 'Liquidação exclusiva do Tesoureiro'
-                                }
+                                title="Abrir comunicado pré-elaborado (Sistema / WhatsApp / SMS)"
                               >
-                                {isTreasurer ? (
-                                  <CreditCard className="w-3.5 h-3.5" />
-                                ) : (
-                                  <Lock className="w-3 h-3" />
-                                )}
-                                <span>Liquidar</span>
+                                <Send className="w-3 h-3" />
+                                <span>Cobrar</span>
                               </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setViewingReceiptInvoice(inv)}
-                                className="inline-flex items-center space-x-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-300 transition cursor-pointer"
-                                title="Ver Recibo Oficial com QR Code"
-                              >
-                                <Receipt className="w-3.5 h-3.5 text-sky-600" />
-                                <span>Recibo</span>
-                              </button>
-                            )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
+      {/* =========================================================
+          SECÇÃO 2: CONTROLO MENSAL (ALUNO POR ALUNO · TURMA POR TURMA · SUBSISTEMA POR SUBSISTEMA)
+          ========================================================= */}
+      {activeSection === 'controlo_mensal' && (
+        <div className="space-y-4">
+          {renderHierarchyFilterBar(false)}
+
+          <div className="bg-white rounded-2xl border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
+            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4" />
+                  <span>
+                    Controlo Mensal de Propinas ({filteredMatrixStudents.length} estudante(s))
+                  </span>
+                </h2>
+                <p className="text-xs text-emerald-100 mt-0.5">
+                  Clique num mês pago para ver o recibo, num mês em atraso/pendente para liquidar, ou
+                  em &ldquo;+&rdquo; para registar o pagamento mensal do aluno.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="px-2 py-0.5 rounded bg-white/15 border border-white/25">✓ Pago</span>
+                <span className="px-2 py-0.5 rounded bg-amber-500/80">Pendente</span>
+                <span className="px-2 py-0.5 rounded bg-red-600">Em Atraso</span>
+                <span className="px-2 py-0.5 rounded bg-white/10">+ Registar</span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse min-w-[1120px]">
+                <thead>
+                  <tr className="bg-[#f7fbf8] text-slate-600 uppercase font-bold border-b border-[#dce7df]">
+                    <th className="py-3 px-3.5 sticky left-0 bg-[#f7fbf8] z-10 min-w-[220px]">
+                      Aluno / Turma / Subsistema
+                    </th>
+                    {ACADEMIC_MONTHS.map((m) => (
+                      <th key={m.key} className="py-3 px-2 text-center whitespace-nowrap">
+                        {m.short}
+                      </th>
+                    ))}
+                    <th className="py-3 px-3 text-right whitespace-nowrap">Em Dívida</th>
+                    <th className="py-3 px-3 text-right whitespace-nowrap">Acção</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {filteredMatrixStudents.length === 0 ? (
+                    <tr>
+                      <td colSpan={ACADEMIC_MONTHS.length + 3} className="py-10 text-center text-slate-500">
+                        Nenhum aluno encontrado para este subsistema ou turma.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredMatrixStudents.map((stu) => {
+                      const meta = resolveStudentHierarchy(stu);
+                      const stuPropinas = instInvoices.filter(
+                        (i) => i.studentId === stu.id && inferCategory(i) === 'propina'
+                      );
+                      const stuTotalDebt = instInvoices
+                        .filter((i) => i.studentId === stu.id && i.status !== 'pago')
+                        .reduce((s, i) => s + i.balanceAoa, 0);
+
+                      return (
+                        <tr key={stu.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="py-2.5 px-3.5 sticky left-0 bg-white z-10 border-r border-slate-100">
+                            <div className="font-bold text-slate-900 truncate max-w-[210px]">
+                              {stu.fullName}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate max-w-[210px]">
+                              <span className="font-mono">{stu.processNumber}</span> ·{' '}
+                              <strong className="text-slate-700">{meta.className}</strong> ·{' '}
+                              <span className="text-[#067836] font-semibold">{meta.subsystemLabel}</span>
+                            </div>
+                          </td>
+
+                          {ACADEMIC_MONTHS.map((m) => {
+                            const matched = stuPropinas.find(
+                              (inv) => matchAcademicMonthKey(inv.monthReference) === m.key
+                            );
+
+                            if (!matched) {
+                              return (
+                                <td key={m.key} className="py-2 px-1 text-center">
+                                  <button
+                                    type="button"
+                                    disabled={!isTreasurer}
+                                    onClick={() =>
+                                      openRegisterModal('propina', stu.id, {
+                                        label: m.label,
+                                        defaultDue: m.defaultDue,
+                                        markPaid: true
+                                      })
+                                    }
+                                    className={`w-8 h-7 rounded-lg text-[11px] font-bold border border-dashed transition inline-flex items-center justify-center ${
+                                      isTreasurer
+                                        ? 'border-slate-300 text-slate-400 hover:border-[#067836] hover:text-[#067836] hover:bg-[#eaf6ee] cursor-pointer'
+                                        : 'border-slate-200 text-slate-300 cursor-not-allowed'
+                                    }`}
+                                    title={`Registar propina de ${m.label} para ${stu.fullName}`}
+                                  >
+                                    +
+                                  </button>
+                                </td>
+                              );
+                            }
+
+                            const overdue = isInvoiceOverdue(matched);
+                            if (matched.status === 'pago') {
+                              return (
+                                <td key={m.key} className="py-2 px-1 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingReceiptInvoice(matched)}
+                                    className="w-8 h-7 rounded-lg bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border border-[#cde6d5] text-[11px] font-bold inline-flex items-center justify-center cursor-pointer"
+                                    title={`${m.label} Pago (${formatKwanza(matched.amountPaidAoa)}) · Ver recibo`}
+                                  >
+                                    ✓
+                                  </button>
+                                </td>
+                              );
+                            }
+
+                            return (
+                              <td key={m.key} className="py-2 px-1 text-center">
+                                <button
+                                  type="button"
+                                  disabled={!isTreasurer}
+                                  onClick={() => handleOpenPaymentModal(matched)}
+                                  className={`w-8 h-7 rounded-lg text-[10px] font-extrabold border inline-flex items-center justify-center transition ${
+                                    overdue
+                                      ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-300'
+                                      : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                                  } ${isTreasurer ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'}`}
+                                  title={`${m.label} ${overdue ? 'EM ATRASO' : 'Pendente'} (${formatKwanza(
+                                    matched.balanceAoa
+                                  )}) · Clique para liquidar`}
+                                >
+                                  {overdue ? '!' : '•'}
+                                </button>
+                              </td>
+                            );
+                          })}
+
+                          <td className="py-2.5 px-3 text-right font-bold tabular-nums whitespace-nowrap">
+                            {stuTotalDebt > 0 ? (
+                              <span className="text-red-600">{formatKwanza(stuTotalDebt)}</span>
+                            ) : (
+                              <span className="text-[#067836]">Em Dia</span>
+                            )}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right whitespace-nowrap">
                             <button
                               type="button"
                               disabled={!isTreasurer}
-                              onClick={() => openNotificationModalFor(stu, inv)}
-                              className={`inline-flex items-center space-x-1 text-xs font-semibold px-2.5 py-1.5 rounded-xl border transition ${
+                              onClick={() =>
+                                openNotificationModalFor(
+                                  stu,
+                                  undefined,
+                                  stuTotalDebt > 0 ? 'atraso_urgente' : 'confirmacao_recibo'
+                                )
+                              }
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                                isTreasurer
+                                  ? 'bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border-[#cde6d5] cursor-pointer'
+                                  : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                              }`}
+                            >
+                              <Send className="w-3 h-3" />
+                              <span>Cobrar</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          SECÇÃO 3: ALUNOS EM ATRASO (COBRANÇA & REDIRECCIONAMENTO WHATSAPP / SMS)
+          ========================================================= */}
+      {activeSection === 'atrasos' && (
+        <div className="space-y-4">
+          {renderHierarchyFilterBar(true)}
+
+          <div className="bg-white rounded-2xl border border-red-200 shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
+            <div className="bg-gradient-to-r from-red-700 to-red-600 text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>
+                    Alunos com Propinas ou Taxas em Atraso ({overdueStudentsList.length} estudante(s))
+                  </span>
+                </h2>
+                <p className="text-xs text-red-100 mt-0.5">
+                  Acompanhe valores vencidos por subsistema, turma e mês e envie comunicados manuais
+                  pelo WhatsApp ou SMS do aluno ou do encarregado.
+                </p>
+              </div>
+              {isTreasurer && overdueStudentsList.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNotifMode('lote_dividas');
+                    setNotifTarget('ambos');
+                    setIsNotifModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 bg-white text-red-700 hover:bg-red-50 text-xs font-bold px-3.5 py-2 rounded-xl transition cursor-pointer self-start sm:self-auto shadow-2xs"
+                >
+                  <Bell className="w-3.5 h-3.5" />
+                  <span>Notificar Todos no Sistema</span>
+                </button>
+              )}
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {overdueStudentsList.length === 0 ? (
+                <div className="p-10 text-center text-xs text-slate-500 space-y-2">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto" />
+                  <p className="font-bold text-slate-700">
+                    Nenhum aluno com atrasos encontrado para os filtros actuais.
+                  </p>
+                </div>
+              ) : (
+                overdueStudentsList.map((entry) => {
+                  const { student: stu, overdueInvoices, totalOverdueAoa, oldestDueDate, maxDaysOverdue } = entry;
+                  const meta = resolveStudentHierarchy(stu);
+                  const gPhone = normalizeAngolaPhone(stu.guardianPhone);
+                  const sPhone = normalizeAngolaPhone(stu.phone);
+                  const draftMsg = buildTemplateMessage('atraso_urgente', stu, overdueInvoices[0]).message;
+
+                  return (
+                    <div
+                      key={stu.id}
+                      className="p-4 flex flex-col xl:flex-row xl:items-center justify-between gap-4 hover:bg-red-50/25 transition-colors"
+                    >
+                      <div className="space-y-1.5 flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-bold text-sm text-slate-900">{stu.fullName}</span>
+                          <span className="font-mono text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                            Proc. {stu.processNumber}
+                          </span>
+                          <span className="text-[11px] font-bold bg-[#eaf6ee] text-[#055827] border border-[#cde6d5] px-2 py-0.5 rounded">
+                            {meta.subsystemLabel} · {meta.className}
+                          </span>
+                          <span className="text-[11px] font-extrabold bg-red-100 text-red-800 border border-red-200 px-2 py-0.5 rounded">
+                            {maxDaysOverdue > 0 ? `${maxDaysOverdue} dia(s) em atraso` : 'Vencido'}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                          <span>
+                            <strong>Encarregado:</strong> {stu.guardianName}
+                            {gPhone ? ` (${gPhone.display})` : ' (Sem telefone)'}
+                          </span>
+                          {sPhone && (
+                            <span>
+                              · <strong>Tel. Aluno:</strong> {sPhone.display}
+                            </span>
+                          )}
+                          <span>
+                            · <strong>Vencimento mais antigo:</strong>{' '}
+                            <span className="font-mono">{oldestDueDate}</span>
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          {overdueInvoices.map((inv) => (
+                            <span
+                              key={inv.id}
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold bg-white border border-red-200 text-red-800 px-2 py-0.5 rounded-md"
+                            >
+                              <span>{inv.monthReference}</span>
+                              <span className="font-bold tabular-nums">
+                                ({formatKwanza(inv.balanceAoa)})
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row xl:flex-col items-start sm:items-center xl:items-end gap-2.5 shrink-0">
+                        <div className="text-left xl:text-right">
+                          <span className="text-[11px] text-slate-500 block">Total em Atraso</span>
+                          <span className="font-display text-lg font-extrabold text-red-700 tabular-nums">
+                            {formatKwanza(totalOverdueAoa)}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={!isTreasurer}
+                            onClick={() => handleOpenPaymentModal(overdueInvoices[0])}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition ${
+                              isTreasurer
+                                ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            }`}
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            <span>Liquidar</span>
+                          </button>
+
+                          {isTreasurer && gPhone && (
+                            <>
+                              <a
+                                href={buildWhatsAppHref(gPhone.waDigits, draftMsg)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border border-[#cde6d5] transition"
+                                title={`Abrir WhatsApp do Encarregado (${gPhone.display})`}
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                <span>WhatsApp Enc.</span>
+                              </a>
+                              <a
+                                href={buildSmsHref(gPhone.smsTarget, draftMsg)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 transition"
+                                title={`Abrir SMS do Encarregado (${gPhone.display})`}
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>SMS Enc.</span>
+                              </a>
+                            </>
+                          )}
+
+                          {isTreasurer && sPhone && (
+                            <a
+                              href={buildWhatsAppHref(sPhone.waDigits, draftMsg)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition"
+                              title={`Abrir WhatsApp do Aluno (${sPhone.display})`}
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              <span>WhatsApp Aluno</span>
+                            </a>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={!isTreasurer}
+                            onClick={() =>
+                              openNotificationModalFor(stu, overdueInvoices[0], 'atraso_urgente')
+                            }
+                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition ${
+                              isTreasurer
+                                ? 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300 cursor-pointer'
+                                : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed'
+                            }`}
+                          >
+                            <Send className="w-3 h-3" />
+                            <span>Editar / Enviar</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          SECÇÃO 4: TAXAS DE MATRÍCULA (APENAS REGISTO DE PAGAMENTO PELO TESOUREIRO)
+          ========================================================= */}
+      {activeSection === 'matriculas' && (
+        <div className="space-y-4">
+          {renderHierarchyFilterBar(false)}
+
+          <div className="bg-white rounded-2xl border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
+            <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold flex items-center gap-2">
+                  <GraduationCap className="w-4 h-4" />
+                  <span>
+                    Pagamentos de Taxas de Matrícula ({filteredMatrixStudents.length} aluno(s))
+                  </span>
+                </h2>
+                <p className="text-xs text-emerald-100 mt-0.5">
+                  Registo exclusivo de pagamento/confirmação da taxa de matrícula. A matrícula
+                  académica dos alunos e criação de turmas é exclusiva da Administração Escolar.
+                </p>
+              </div>
+              {isTreasurer && (
+                <button
+                  type="button"
+                  onClick={() => openRegisterModal('matricula')}
+                  className="inline-flex items-center gap-1.5 bg-white text-[#067836] hover:bg-[#eaf6ee] text-xs font-bold px-3.5 py-2 rounded-xl transition cursor-pointer self-start sm:self-auto shadow-2xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Registar Pagamento de Taxa</span>
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse min-w-[820px]">
+                <thead>
+                  <tr className="bg-[#f7fbf8] text-slate-500 uppercase font-semibold border-b border-[#dce7df]">
+                    <th className="py-3 px-4">Aluno / Processo</th>
+                    <th className="py-3 px-4">Subsistema / Turma / Classe</th>
+                    <th className="py-3 px-4">Encarregado / Telefone</th>
+                    <th className="py-3 px-4 text-right">Taxa</th>
+                    <th className="py-3 px-4 text-center">Recibo Matrícula</th>
+                    <th className="py-3 px-4 text-center">Situação na Tesouraria</th>
+                    <th className="py-3 px-4 text-right">Acções</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {filteredMatrixStudents.map((stu) => {
+                    const isPaid = Boolean(stu.enrollmentFeePaid);
+                    const meta = resolveStudentHierarchy(stu);
+                    return (
+                      <tr key={stu.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-900">{stu.fullName}</div>
+                          <div className="font-mono text-[11px] text-slate-400">
+                            Proc: {stu.processNumber}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-800">{meta.className}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {meta.gradeLevel} · <span className="text-[#067836] font-semibold">{meta.subsystemLabel}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-slate-800">{stu.guardianName}</div>
+                          <div className="font-mono text-[11px] text-slate-500">{stu.guardianPhone}</div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-bold tabular-nums text-slate-900">
+                          {formatKwanza(stu.enrollmentAmountAoa || 15000)}
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono text-[11px]">
+                          {stu.enrollmentReceiptNumber || 'Aguardando Tesouraria'}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold border ${
+                              isPaid
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}
+                          >
+                            {isPaid ? 'Liquidada' : 'Pendente'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
+                            {!isPaid && (
+                              <button
+                                type="button"
+                                disabled={!isTreasurer}
+                                onClick={() => openRegisterModal('matricula', stu.id)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                                  isTreasurer
+                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                                    : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                }`}
+                              >
+                                {isTreasurer ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Lock className="w-3 h-3" />
+                                )}
+                                <span>Registar Pagamento</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={!isTreasurer}
+                              onClick={() =>
+                                openNotificationModalFor(
+                                  stu,
+                                  undefined,
+                                  isPaid ? 'confirmacao_recibo' : 'outros_emolumentos'
+                                )
+                              }
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition ${
                                 isTreasurer
                                   ? 'bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border-[#cde6d5] cursor-pointer'
                                   : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed'
                               }`}
-                              title={
-                                isTreasurer
-                                  ? 'Enviar notificação financeira ao aluno/encarregado'
-                                  : 'Envio exclusivo do Tesoureiro'
-                              }
                             >
                               <Send className="w-3 h-3" />
-                              <span>Notificar</span>
+                              <span>Cobrar</span>
                             </button>
                           </div>
                         </td>
@@ -1038,138 +2110,11 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
               </table>
             </div>
           </div>
-        </>
-      )}
-
-      {/* =========================================================
-          SECÇÃO 2: CONTROLO DE MATRÍCULAS E CONFIRMAÇÕES (TESOURARIA)
-          ========================================================= */}
-      {activeSection === 'matriculas' && (
-        <div className="bg-white rounded-2xl border border-[#dce7df] shadow-[0_2px_10px_rgba(2,44,22,0.04)] overflow-hidden">
-          <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-bold flex items-center gap-2">
-                <GraduationCap className="w-4 h-4" />
-                <span>Taxas de Matrícula &amp; Confirmação Anual ({instStudents.length} alunos)</span>
-              </h2>
-              <p className="text-xs text-emerald-100 mt-0.5">
-                O registo financeiro e confirmação da taxa de matrícula é executado exclusivamente pelo Tesoureiro.
-              </p>
-            </div>
-            {isTreasurer && (
-              <button
-                type="button"
-                onClick={() => openRegisterModal('matricula')}
-                className="inline-flex items-center gap-1.5 bg-white text-[#067836] hover:bg-[#eaf6ee] text-xs font-bold px-3.5 py-2 rounded-xl transition cursor-pointer self-start sm:self-auto shadow-2xs"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Registar Taxa de Matrícula</span>
-              </button>
-            )}
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse min-w-[780px]">
-              <thead>
-                <tr className="bg-[#f7fbf8] text-slate-500 uppercase font-semibold border-b border-[#dce7df]">
-                  <th className="py-3 px-4">Aluno / Processo</th>
-                  <th className="py-3 px-4">Turma / Classe</th>
-                  <th className="py-3 px-4">Encarregado / Telefone</th>
-                  <th className="py-3 px-4 text-right">Taxa</th>
-                  <th className="py-3 px-4 text-center">Recibo Matrícula</th>
-                  <th className="py-3 px-4 text-center">Situação na Tesouraria</th>
-                  <th className="py-3 px-4 text-right">Acções</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
-                {instStudents.map((stu) => {
-                  const isPaid = Boolean(stu.enrollmentFeePaid);
-                  return (
-                    <tr key={stu.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-slate-900">{stu.fullName}</div>
-                        <div className="font-mono text-[11px] text-slate-400">
-                          Proc: {stu.processNumber}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-800">{stu.className}</div>
-                        <div className="text-[11px] text-slate-500">{stu.gradeLevel}</div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-slate-800">{stu.guardianName}</div>
-                        <div className="font-mono text-[11px] text-slate-500">{stu.guardianPhone}</div>
-                      </td>
-                      <td className="py-3 px-4 text-right font-bold tabular-nums text-slate-900">
-                        {formatKwanza(stu.enrollmentAmountAoa || 15000)}
-                      </td>
-                      <td className="py-3 px-4 text-center font-mono text-[11px]">
-                        {stu.enrollmentReceiptNumber || 'Aguardando Tesouraria'}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold border ${
-                            isPaid
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border-amber-200'
-                          }`}
-                        >
-                          {isPaid ? 'Liquidada' : 'Pendente'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5">
-                          {!isPaid && (
-                            <button
-                              type="button"
-                              disabled={!isTreasurer}
-                              onClick={() => openRegisterModal('matricula', stu.id)}
-                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
-                                isTreasurer
-                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
-                                  : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                              }`}
-                            >
-                              {isTreasurer ? (
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                              ) : (
-                                <Lock className="w-3 h-3" />
-                              )}
-                              <span>Registar Pagamento</span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            disabled={!isTreasurer}
-                            onClick={() =>
-                              openNotificationModalFor(
-                                stu,
-                                undefined,
-                                isPaid ? 'confirmacao_matricula' : 'cobranca_pendente'
-                              )
-                            }
-                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition ${
-                              isTreasurer
-                                ? 'bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border-[#cde6d5] cursor-pointer'
-                                : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed'
-                            }`}
-                          >
-                            <Send className="w-3 h-3" />
-                            <span>Notificar</span>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
 
       {/* =========================================================
-          SECÇÃO 3: HISTÓRICO & ENVIO DE NOTIFICAÇÕES FINANCEIRAS
+          SECÇÃO 5: COMUNICADOS PRÉ-ELABORADOS & REDIRECCIONAMENTO WHATSAPP / SMS
           ========================================================= */}
       {activeSection === 'notificacoes' && (
         <div className="space-y-4">
@@ -1177,11 +2122,12 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-bold flex items-center gap-2">
-                  <Bell className="w-4 h-4" />
-                  <span>Central de Notificações Financeiras aos Alunos &amp; Encarregados</span>
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Sistema de Cobranças: Mensagens Pré-Elaboradas · WhatsApp &amp; SMS</span>
                 </h2>
                 <p className="text-xs text-emerald-100 mt-0.5">
-                  Todas as comunicações sobre propinas vencidas, pendentes, matrículas ou confirmação de recibos enviadas pelo Tesoureiro.
+                  Escolha um modelo pré-elaborado abaixo ou redija uma cobrança com redireccionamento
+                  manual directo para o WhatsApp ou SMS do Aluno ou Encarregado.
                 </p>
               </div>
 
@@ -1201,25 +2147,51 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => openNotificationModalFor(instStudents[0])}
+                    onClick={() => openNotificationModalFor(undefined, undefined, 'atraso_urgente')}
                     className="inline-flex items-center gap-1.5 bg-white text-[#067836] hover:bg-[#eaf6ee] text-xs font-bold px-3.5 py-2 rounded-xl transition cursor-pointer shadow-2xs"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span>Nova Notificação</span>
+                    <span>Novo Comunicado / WhatsApp</span>
                   </button>
                 </div>
               )}
             </div>
+
+            {/* Cartões de Modelos Pré-Elaborados */}
+            {isTreasurer && (
+              <div className="p-4 bg-[#f7fbf8] border-b border-[#dce7df] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {COLLECTION_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => openNotificationModalFor(undefined, undefined, tpl.id)}
+                    className="text-left p-3 rounded-xl bg-white border border-[#cde6d5] hover:border-[#067836] hover:shadow-xs transition cursor-pointer space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#064e26]">{tpl.label}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#eaf6ee] text-[#055827]">
+                        {tpl.badge}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">{tpl.description}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2.5">
             {instNotifications.length === 0 ? (
               <div className="bg-white rounded-2xl border border-[#dce7df] p-8 text-center text-xs text-slate-500">
-                Nenhuma notificação financeira enviada até ao momento.
+                Nenhum comunicado de cobrança registado até ao momento.
               </div>
             ) : (
               instNotifications.map((notif) => {
                 const badge = notifTypeLabel(notif.type);
+                const stu = studentById.get(notif.studentId);
+                const gPhone = normalizeAngolaPhone(notif.guardianPhone || stu?.guardianPhone);
+                const sPhone = normalizeAngolaPhone(stu?.phone);
+
                 return (
                   <div
                     key={notif.id}
@@ -1265,6 +2237,53 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                           <strong>Enviado por:</strong> {notif.sentByName} ({notif.sentByRole})
                         </span>
                       </div>
+
+                      {isTreasurer && (gPhone || sPhone) && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                          {gPhone && (
+                            <>
+                              <a
+                                href={buildWhatsAppHref(gPhone.waDigits, notif.message)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-[#eaf6ee] hover:bg-[#d7efe0] text-[#055827] border border-[#cde6d5] transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                <span>WhatsApp Encarregado</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                              <a
+                                href={buildSmsHref(gPhone.smsTarget, notif.message)}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>SMS Encarregado</span>
+                              </a>
+                            </>
+                          )}
+                          {sPhone && (
+                            <>
+                              <a
+                                href={buildWhatsAppHref(sPhone.waDigits, notif.message)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                <span>WhatsApp Aluno</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                              <a
+                                href={buildSmsHref(sPhone.smsTarget, notif.message)}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>SMS Aluno</span>
+                              </a>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex md:flex-col items-center md:items-end justify-between gap-2 shrink-0">
@@ -1412,7 +2431,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       )}
 
       {/* =========================================================
-          MODAL REGISTO EXCLUSIVO DO TESOUREIRO (PROPINAS / MATRÍCULAS / OUTROS)
+          MODAL REGISTO EXCLUSIVO DO TESOUREIRO (PROPINAS / OUTROS / TAXA MATRÍCULA)
           ========================================================= */}
       {isRegisterModalOpen && isTreasurer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs overflow-y-auto">
@@ -1420,7 +2439,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-slate-900 text-base flex items-center space-x-2">
                 <Layers className="w-5 h-5 text-emerald-600" />
-                <span>Registar Finança (Exclusivo do Tesoureiro)</span>
+                <span>Registar Pagamento (Tesouraria)</span>
               </h3>
               <button
                 onClick={() => setIsRegisterModalOpen(false)}
@@ -1431,17 +2450,16 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
             </div>
 
             <form onSubmit={handleCreateFinancialRecord} className="mt-4 space-y-3.5 text-xs">
-              {/* Selecção de Categoria Financeira */}
               <div>
                 <label className="font-semibold text-slate-700 block mb-1.5">
-                  Categoria Financeira *
+                  Categoria do Pagamento *
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {(
                     [
                       { id: 'propina', label: 'Propinas' },
-                      { id: 'matricula', label: 'Matrículas' },
-                      { id: 'outros', label: 'Outros' }
+                      { id: 'outros', label: 'Outros' },
+                      { id: 'matricula', label: 'Taxa Matrícula' }
                     ] as const
                   ).map((cat) => (
                     <button
@@ -1478,25 +2496,28 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
 
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">
-                  Seleccione o Aluno *
+                  Seleccione o Aluno (já matriculado pela Administração) *
                 </label>
                 <select
                   value={regStudentId}
                   onChange={(e) => setRegStudentId(e.target.value)}
                   className="w-full bg-slate-50 text-slate-800 rounded-xl px-3 py-2 border border-[#cde6d5] font-semibold"
                 >
-                  {instStudents.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.fullName} ({s.processNumber} · {s.gradeLevel})
-                    </option>
-                  ))}
+                  {instStudents.map((s) => {
+                    const meta = resolveStudentHierarchy(s);
+                    return (
+                      <option key={s.id} value={s.id}>
+                        {s.fullName} ({s.processNumber} · {meta.className} · {meta.subsystemLabel})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
               {regCategory === 'outros' && (
                 <div>
                   <span className="font-semibold text-slate-700 block mb-1">
-                    Atalhos Rápidos (Outros Emolumentos):
+                    Atalhos Rápidos (Outros Pagamentos / Emolumentos):
                   </span>
                   <div className="flex flex-wrap gap-1.5">
                     {OTHER_FEE_PRESETS.map((preset) => (
@@ -1519,15 +2540,15 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
               {regCategory === 'matricula' ? (
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">
-                    Tipo de Acto de Matrícula *
+                    Tipo de Taxa de Matrícula *
                   </label>
                   <select
                     value={regEnrollmentType}
                     onChange={(e) => setRegEnrollmentType(e.target.value as any)}
                     className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-medium"
                   >
-                    <option value="matricula_nova">Matrícula Nova (Ingresso)</option>
-                    <option value="confirmacao_matricula">Confirmação de Matrícula Anual</option>
+                    <option value="matricula_nova">Taxa de Matrícula Inicial</option>
+                    <option value="confirmacao_matricula">Taxa de Confirmação Anual</option>
                   </select>
                 </div>
               ) : (
@@ -1551,12 +2572,30 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   <label className="font-semibold text-slate-700 block mb-1">
                     Referência / Mês
                   </label>
-                  <input
-                    type="text"
-                    value={regMonth}
-                    onChange={(e) => setRegMonth(e.target.value)}
-                    className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300"
-                  />
+                  {regCategory === 'propina' ? (
+                    <select
+                      value={regMonth}
+                      onChange={(e) => {
+                        const found = ACADEMIC_MONTHS.find((m) => m.label === e.target.value);
+                        setRegMonth(e.target.value);
+                        if (found) setRegDueDate(found.defaultDue);
+                      }}
+                      className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-medium"
+                    >
+                      {ACADEMIC_MONTHS.map((m) => (
+                        <option key={m.key} value={m.label}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={regMonth}
+                      onChange={(e) => setRegMonth(e.target.value)}
+                      className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300"
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Valor (Kz) *</label>
@@ -1628,7 +2667,6 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                 </div>
               )}
 
-              {/* Opção de Notificação Imediata ao Aluno / Encarregado */}
               <div className="p-3 bg-[#eaf6ee] border border-[#cde6d5] rounded-xl space-y-2">
                 <label className="inline-flex items-center gap-2 font-bold text-[#064e26] cursor-pointer">
                   <input
@@ -1637,7 +2675,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                     onChange={(e) => setRegSendNotif(e.target.checked)}
                     className="rounded border-[#8cd0a6] text-[#067836] focus:ring-[#16a34a]"
                   />
-                  <span>Enviar notificação automática sobre este registo ao Aluno / Encarregado</span>
+                  <span>Registar notificação automática para o Aluno / Encarregado</span>
                 </label>
 
                 {regSendNotif && (
@@ -1668,7 +2706,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   type="submit"
                   className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-md cursor-pointer"
                 >
-                  Confirmar Registo Financeiro
+                  Confirmar Pagamento / Factura
                 </button>
               </div>
             </form>
@@ -1794,15 +2832,15 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
       )}
 
       {/* =========================================================
-          MODAL DE ENVIO DE NOTIFICAÇÕES FINANCEIRAS (EXCLUSIVO TESOUREIRO)
+          MODAL DE COMUNICADOS PRÉ-ELABORADOS & REDIRECCIONAMENTO MANUAL WHATSAPP / SMS
           ========================================================= */}
       {isNotifModalOpen && isTreasurer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-[#dce7df] overflow-hidden my-6">
+          <div className="bg-white rounded-2xl max-w-xl w-full shadow-2xl border border-[#dce7df] overflow-hidden my-6">
             <div className="bg-gradient-to-r from-[#067836] to-[#149a45] text-white px-5 py-3.5 flex items-center justify-between">
               <h3 className="font-bold text-sm sm:text-base flex items-center space-x-2">
-                <Send className="w-4 h-4" />
-                <span>Enviar Notificação Financeira</span>
+                <MessageCircle className="w-4 h-4" />
+                <span>Comunicados de Cobrança · WhatsApp &amp; SMS</span>
               </h3>
               <button
                 onClick={() => setIsNotifModalOpen(false)}
@@ -1823,7 +2861,7 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                       : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-[#eaf6ee]'
                   }`}
                 >
-                  Aluno Individual
+                  Aluno Individual (WhatsApp / SMS)
                 </button>
                 <button
                   type="button"
@@ -1834,17 +2872,17 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                       : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-[#eaf6ee]'
                   }`}
                 >
-                  Em Lote (Com Pendentes)
+                  Em Lote no Sistema (Dívidas)
                 </button>
               </div>
 
               {notifMode === 'lote_dividas' ? (
                 <div className="p-3.5 bg-[#eaf6ee] border border-[#cde6d5] rounded-xl text-[#064e26] space-y-1.5">
-                  <div className="font-bold">Envio Automático Personalizado em Lote</div>
+                  <div className="font-bold">Registo Automático Personalizado em Lote</div>
                   <p>
-                    O sistema enviará uma notificação personalizada com o montante exacto em dívida e
-                    referência Multicaixa para todos os estudantes com propinas vencidas/pendentes ou
-                    taxa de matrícula por liquidar.
+                    O sistema registará uma notificação personalizada no portal com o montante em
+                    dívida e referência Multicaixa para todos os estudantes com propinas em atraso
+                    ou pendentes segundo os filtros seleccionados.
                   </p>
                 </div>
               ) : (
@@ -1859,45 +2897,75 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                         const stu = instStudents.find((s) => s.id === e.target.value);
                         setNotifStudentId(e.target.value);
                         setNotifInvoiceId(undefined);
-                        setNotifMessage(buildDefaultNotifMessage(stu, notifType));
+                        const built = buildTemplateMessage(selectedTemplateId, stu);
+                        setNotifTitle(built.title);
+                        setNotifMessage(built.message);
+                        setNotifType(built.notifType);
                       }}
                       className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-semibold"
                     >
-                      {instStudents.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.fullName} · Enc: {s.guardianName}
-                        </option>
-                      ))}
+                      {instStudents.map((s) => {
+                        const meta = resolveStudentHierarchy(s);
+                        return (
+                          <option key={s.id} value={s.id}>
+                            {s.fullName} ({meta.className}) · Enc: {s.guardianName}
+                          </option>
+                        );
+                      })}
                     </select>
+                  </div>
+
+                  {/* Modelos Pré-Elaborados */}
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1.5">
+                      Modelo Pré-Elaborado de Cobrança *
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {COLLECTION_TEMPLATES.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTemplateId(tpl.id);
+                            const inv = notifInvoiceId
+                              ? instInvoices.find((i) => i.id === notifInvoiceId)
+                              : undefined;
+                            const built = buildTemplateMessage(tpl.id, activeModalStudent, inv);
+                            setNotifType(built.notifType);
+                            setNotifTitle(built.title);
+                            setNotifMessage(built.message);
+                          }}
+                          className={`text-left px-2.5 py-2 rounded-xl border transition cursor-pointer ${
+                            selectedTemplateId === tpl.id
+                              ? 'bg-[#eaf6ee] border-[#067836] text-[#055827] font-bold'
+                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 font-medium'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="truncate">{tpl.label}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-slate-200 shrink-0">
+                              {tpl.badge}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="font-semibold text-slate-700 block mb-1">
-                        Tipo de Situação *
-                      </label>
-                      <select
-                        value={notifType}
-                        onChange={(e) => {
-                          const nextType = e.target.value as FinancialNotificationType;
-                          setNotifType(nextType);
-                          const stu = instStudents.find((s) => s.id === notifStudentId);
-                          setNotifMessage(buildDefaultNotifMessage(stu, nextType));
-                        }}
-                        className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-medium"
-                      >
-                        <option value="cobranca_pendente">Cobrança Pendente</option>
-                        <option value="aviso_atraso">Aviso de Atraso / Vencida</option>
-                        <option value="confirmacao_matricula">Confirmação de Matrícula</option>
-                        <option value="confirmacao_pagamento">Confirmação de Pagamento</option>
-                        <option value="emolumento_outros">Outros Emolumentos</option>
-                        <option value="aviso_geral">Aviso Financeiro Geral</option>
-                      </select>
+                      <label className="font-semibold text-slate-700 block mb-1">Assunto *</label>
+                      <input
+                        type="text"
+                        required
+                        value={notifTitle}
+                        onChange={(e) => setNotifTitle(e.target.value)}
+                        className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-semibold"
+                      />
                     </div>
-
                     <div>
                       <label className="font-semibold text-slate-700 block mb-1">
-                        Destinatário *
+                        Destinatário no Sistema *
                       </label>
                       <select
                         value={notifTarget}
@@ -1914,19 +2982,8 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   </div>
 
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Assunto *</label>
-                    <input
-                      type="text"
-                      required
-                      value={notifTitle}
-                      onChange={(e) => setNotifTitle(e.target.value)}
-                      className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 font-semibold"
-                    />
-                  </div>
-
-                  <div>
                     <label className="font-semibold text-slate-700 block mb-1">
-                      Mensagem sobre a Situação Financeira *
+                      Mensagem Pré-Elaborada (Editável) *
                     </label>
                     <textarea
                       rows={4}
@@ -1935,6 +2992,94 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                       onChange={(e) => setNotifMessage(e.target.value)}
                       className="w-full bg-slate-50 text-slate-800 rounded-lg px-3 py-2 border border-slate-300 leading-relaxed"
                     />
+                  </div>
+
+                  {/* Painel de Redireccionamento Manual WhatsApp / SMS */}
+                  <div className="p-3.5 bg-[#f7fbf8] border border-[#cde6d5] rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[#064e26]">
+                        Redireccionamento Manual por WhatsApp ou SMS
+                      </span>
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        Abre com a mensagem preenchida
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {/* Contactos do Encarregado */}
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 space-y-1.5">
+                        <div className="text-[11px] font-bold text-slate-800 truncate">
+                          Encarregado: {activeModalStudent?.guardianName || '—'}
+                        </div>
+                        {guardianPhoneMeta ? (
+                          <>
+                            <div className="font-mono text-[10px] text-slate-500">
+                              Tel: {guardianPhoneMeta.display}
+                            </div>
+                            <div className="flex items-center gap-1.5 pt-0.5">
+                              <a
+                                href={buildWhatsAppHref(guardianPhoneMeta.waDigits, notifMessage)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#067836] hover:bg-[#055827] text-white font-bold text-[11px] transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                <span>WhatsApp</span>
+                              </a>
+                              <a
+                                href={buildSmsHref(guardianPhoneMeta.smsTarget, notifMessage)}
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-bold text-[11px] transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>SMS</span>
+                              </a>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-[11px] text-amber-700 py-1">
+                            <PhoneOff className="w-3.5 h-3.5 shrink-0" />
+                            <span>Telefone do encarregado não registado na ficha.</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Contactos do Aluno */}
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 space-y-1.5">
+                        <div className="text-[11px] font-bold text-slate-800 truncate">
+                          Aluno: {activeModalStudent?.fullName || '—'}
+                        </div>
+                        {studentPhoneMeta ? (
+                          <>
+                            <div className="font-mono text-[10px] text-slate-500">
+                              Tel: {studentPhoneMeta.display}
+                            </div>
+                            <div className="flex items-center gap-1.5 pt-0.5">
+                              <a
+                                href={buildWhatsAppHref(studentPhoneMeta.waDigits, notifMessage)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#067836] hover:bg-[#055827] text-white font-bold text-[11px] transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                <span>WhatsApp</span>
+                              </a>
+                              <a
+                                href={buildSmsHref(studentPhoneMeta.smsTarget, notifMessage)}
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-bold text-[11px] transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>SMS</span>
+                              </a>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 py-1">
+                            <PhoneOff className="w-3.5 h-3.5 shrink-0" />
+                            <span>Telefone directo do aluno não registado.</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </>
               )}
@@ -1945,14 +3090,14 @@ export const FinancialManager: React.FC<FinancialManagerProps> = ({
                   onClick={() => setIsNotifModalOpen(false)}
                   className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 font-medium cursor-pointer"
                 >
-                  Cancelar
+                  Fechar
                 </button>
                 <button
                   type="submit"
                   className="inline-flex items-center gap-1.5 px-5 py-2 bg-gradient-to-r from-[#067836] to-[#149a45] hover:from-[#05652d] hover:to-[#11863b] text-white font-bold rounded-xl shadow-md cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Enviar Notificação</span>
+                  <span>Guardar Comunicado no Sistema</span>
                 </button>
               </div>
             </form>

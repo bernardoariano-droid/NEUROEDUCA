@@ -194,10 +194,21 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
     !isSuperAdminMode &&
     (currentUser?.role === 'director_municipal' || activeRole === 'director_municipal');
 
-  const isModuleOnlyMode = isSuperAdminMode || isMunicipalDirectorMode;
+  const isTreasurerMode =
+    !isStudentMode &&
+    !isProfessorMode &&
+    !isSuperAdminMode &&
+    !isMunicipalDirectorMode &&
+    currentUser?.role === 'funcionario_financeiro';
+
+  const isModuleOnlyMode = isSuperAdminMode || isMunicipalDirectorMode || isTreasurerMode;
 
   const isSchoolAdminMode =
-    !isStudentMode && !isProfessorMode && !isSuperAdminMode && !isMunicipalDirectorMode;
+    !isStudentMode &&
+    !isProfessorMode &&
+    !isSuperAdminMode &&
+    !isMunicipalDirectorMode &&
+    !isTreasurerMode;
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1143,6 +1154,39 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
       ];
     }
 
+    if (isTreasurerMode) {
+      return [
+        {
+          id: 'tudo',
+          label: 'Tesouraria & Cobranças',
+          shortLabel: 'Todas',
+          description: 'Controlo mensal, propinas, atrasos e recibos',
+          icon: <Filter className="w-3.5 h-3.5" />
+        },
+        {
+          id: 'tes_financas',
+          label: 'Propinas, Controlo Mensal & Atrasos',
+          shortLabel: 'Propinas',
+          description: 'Pagamentos por aluno, turma e subsistema',
+          icon: <DollarSign className="w-3.5 h-3.5" />
+        },
+        {
+          id: 'tes_recibos',
+          label: 'Recibos & Comunicados',
+          shortLabel: 'Recibos',
+          description: 'Recibos com QR Code e comunicados',
+          icon: <Receipt className="w-3.5 h-3.5" />
+        },
+        {
+          id: 'tes_alunos',
+          label: 'Consultar Aluno na Tesouraria',
+          shortLabel: 'Alunos',
+          description: 'Localizar propinas e cobranças de um estudante',
+          icon: <GraduationCap className="w-3.5 h-3.5" />
+        }
+      ];
+    }
+
     return [
       {
         id: 'tudo',
@@ -1180,7 +1224,7 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
         icon: <FileText className="w-3.5 h-3.5" />
       }
     ];
-  }, [isSuperAdminMode, isMunicipalDirectorMode, isSchoolAdminMode, isProfessorMode, currentUser?.municipality]);
+  }, [isSuperAdminMode, isMunicipalDirectorMode, isSchoolAdminMode, isProfessorMode, isTreasurerMode, currentUser?.municipality]);
 
   // 2. Opções completas para pesquisa livre e módulos
   const allOptions: FilterOption[] = useMemo(() => {
@@ -1429,6 +1473,64 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
             tab: 'municipal_schools',
             institutionId: inst.id
           }
+        });
+      });
+
+      return list;
+    }
+
+    if (isTreasurerMode && currentInstitution) {
+      list.push(
+        {
+          id: 'tes-mod-fin',
+          functionalityId: 'tes_financas',
+          sectionLabel: 'Tesouraria & Controlo Mensal',
+          title: 'Propinas, Controlo Mensal & Outros Pagamentos',
+          subtitle: 'Registo de pagamentos por aluno, turma e subsistema (AOA)',
+          badge: 'Tesouraria',
+          badgeTone: 'emerald',
+          icon: <DollarSign className="w-4 h-4 text-emerald-600" />,
+          keywords: 'propinas pagamentos controlo mensal subsistema turma aluno atraso cobranca whatsapp sms',
+          payload: { tab: 'financial' }
+        },
+        {
+          id: 'tes-mod-docs',
+          functionalityId: 'tes_recibos',
+          sectionLabel: 'Recibos & Documentos',
+          title: 'Emitir Recibo Oficial de Propina (QR Code)',
+          subtitle: 'Impressão e exportação de recibos de liquidação',
+          badge: 'Recibos',
+          badgeTone: 'amber',
+          icon: <Receipt className="w-4 h-4 text-amber-600" />,
+          keywords: 'recibo propina comprovativo pagamento pdf',
+          payload: { tab: 'documents', docType: 'recibo_propina' }
+        },
+        {
+          id: 'tes-mod-comm',
+          functionalityId: 'tes_recibos',
+          sectionLabel: 'Comunicações',
+          title: 'Comunicações & Circulares da Escola',
+          subtitle: 'Avisos institucionais dirigidos à tesouraria',
+          badge: 'Comunicados',
+          badgeTone: 'blue',
+          icon: <Megaphone className="w-4 h-4 text-[#067836]" />,
+          keywords: 'comunicados avisos circulares escola',
+          payload: { tab: 'communications' }
+        }
+      );
+
+      instStudents.forEach((stu) => {
+        list.push({
+          id: `tes-stu-${stu.id}`,
+          functionalityId: 'tes_alunos',
+          sectionLabel: 'Estudantes (Consulta na Tesouraria)',
+          title: stu.fullName,
+          subtitle: `Proc. ${stu.processNumber} · ${stu.gradeLevel} · ${stu.className}`,
+          badge: 'Financeiro',
+          badgeTone: 'slate',
+          icon: <GraduationCap className="w-4 h-4 text-emerald-600" />,
+          keywords: `${stu.fullName} ${stu.processNumber} ${stu.className} propina pagamento`,
+          payload: { tab: 'financial', studentId: stu.id, studentSearch: stu.processNumber }
         });
       });
 
@@ -1911,6 +2013,7 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
   }, [
     isSuperAdminMode,
     isMunicipalDirectorMode,
+    isTreasurerMode,
     isSchoolAdminMode,
     isProfessorMode,
     institutions,
@@ -2017,6 +2120,8 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
     ? 'Pesquisar escolas, utilizadores, planos SaaS...'
     : isMunicipalDirectorMode
     ? `Pesquisar escolas de ${currentUser?.municipality || 'Educação'}, estatísticas M/F e aproveitamento...`
+    : isTreasurerMode
+    ? 'Pesquisar alunos para pagamento de propinas, recibos ou cobranças...'
     : 'Pesquisa em Cascata: Subsistema → Classe → Turma → Aluno → Disciplinas/Pautas/Boletins...';
 
   const currentCascadeStep = !cascadeSubsystem
@@ -2677,6 +2782,8 @@ export const NavigationFilterDropdown: React.FC<NavigationFilterDropdownProps> =
                 ? 'Super Admin · Navegação por Funcionalidades SaaS'
                 : isMunicipalDirectorMode
                 ? `Direcção Municipal de ${currentUser?.municipality || 'Educação'} · Escolas e Estatísticas`
+                : isTreasurerMode
+                ? 'Tesouraria · Propinas, Controlo Mensal, Atrasos & Cobranças'
                 : 'Pesquisa em Cascata: Subsistema → Classe → Turma → Aluno → Filtro Suspenso'}
             </span>
             <span className="hidden sm:inline font-mono">Esc Fechar</span>

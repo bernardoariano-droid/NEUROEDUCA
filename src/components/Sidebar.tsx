@@ -521,6 +521,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </button>
             </>
+          ) : isTreasurerMode ? (
+            <>
+              <SectionLabel title="Tesouraria &amp; Cobranças" />
+              <button
+                onClick={() => handleTabClick('financial')}
+                className={navItemClass(currentTab === 'financial')}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <DollarSign className={iconClass(currentTab === 'financial')} />
+                  <span className="truncate">Propinas &amp; Cobranças</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handleTabClick('documents')}
+                className={navItemClass(currentTab === 'documents')}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <Receipt className={iconClass(currentTab === 'documents')} />
+                  <span className="truncate">Recibos &amp; Documentos</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => handleTabClick('communications')}
+                className={navItemClass(currentTab === 'communications')}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <Megaphone className={iconClass(currentTab === 'communications')} />
+                  <span className="truncate">Comunicações</span>
+                </div>
+                {unreadAnnouncementsCount > 0 && (
+                  <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-white/20 text-white tabular-nums">
+                    {unreadAnnouncementsCount}
+                  </span>
+                )}
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -589,9 +627,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <DollarSign className={iconClass(currentTab === 'financial')} />
-                  <span className="truncate">
-                    {isTreasurerMode ? 'Finanças (Tesoureiro)' : 'Finanças'}
-                  </span>
+                  <span className="truncate">Finanças</span>
                 </div>
               </button>
 

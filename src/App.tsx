@@ -205,16 +205,17 @@ export default function App() {
 
   const isMunicipalDirectorRole = currentUser?.role === 'director_municipal';
 
+  // Apenas o Tesoureiro autenticado tem autoridade exclusiva de registo financeiro e envio de notificações financeiras
+  const isTreasurerUser = currentUser?.role === 'funcionario_financeiro';
+
   const isSchoolAdminRole = Boolean(
     currentUser &&
       !isStudentOrGuardian &&
       !isProfessorRole &&
       !isSuperAdminRole &&
-      !isMunicipalDirectorRole
+      !isMunicipalDirectorRole &&
+      !isTreasurerUser
   );
-
-  // Apenas o Tesoureiro autenticado tem autoridade exclusiva de registo financeiro e envio de notificações financeiras
-  const isTreasurerUser = currentUser?.role === 'funcionario_financeiro';
 
   // Dados estritamente autorizados quando em sessão de Aluno ou Encarregado de Educação (Defesa em profundidade na raiz)
   const authorizedStudentPortalStudents = useMemo(() => {
@@ -362,6 +363,19 @@ export default function App() {
       return;
     }
 
+    if (isTreasurerUser) {
+      const allowedTreasurerTabs = ['financial', 'documents', 'communications'];
+      if (!allowedTreasurerTabs.includes(currentTab)) {
+        setCurrentTab('financial');
+        setAccessDeniedNotice(
+          'Restrição de Perfil (Tesoureiro): Não tem permissão para criar ou apagar turmas, fazer matrículas nem cadastrar utilizadores.'
+        );
+        const timer = setTimeout(() => setAccessDeniedNotice(null), 6000);
+        return () => clearTimeout(timer);
+      }
+      return;
+    }
+
     if (isSchoolAdminRole) {
       const allowedSchoolAdminTabs = [
         'dashboard',
@@ -400,6 +414,7 @@ export default function App() {
     isProfessorRole,
     isSuperAdminRole,
     isMunicipalDirectorRole,
+    isTreasurerUser,
     isSchoolAdminRole,
     currentInstitution,
     currentUser
@@ -674,8 +689,15 @@ export default function App() {
     }
   };
 
-  // Handlers para Alunos
+  // Handlers para Alunos (Bloqueado para Tesoureiro, Professor e Alunos)
   const handleAddStudent = (newStudent: Student) => {
+    if (!isSchoolAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para efectuar matrículas de alunos.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const updatedStudents = [newStudent, ...students];
     setStudents(updatedStudents);
 
@@ -749,6 +771,13 @@ export default function App() {
   };
 
   const handleUpdateStudent = (updatedStudent: Student) => {
+    if (!isSchoolAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para editar fichas ou matrículas de alunos.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const prevStudent = students.find((s) => s.id === updatedStudent.id);
     const updatedStudents = students.map((s) =>
       s.id === updatedStudent.id ? updatedStudent : s
@@ -856,6 +885,13 @@ export default function App() {
   };
 
   const handleDeleteStudent = (studentId: string) => {
+    if (!isSchoolAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para remover alunos ou matrículas.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const targetStudent = students.find((s) => s.id === studentId);
     if (!targetStudent) return;
 
@@ -1994,6 +2030,13 @@ export default function App() {
 
   // Handlers para Matrícula em Massa e Utilizadores da Escola
   const handleAddMultipleStudents = (newStudentsList: Student[]) => {
+    if (!isSchoolAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para fazer matrículas em massa.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const updatedStudents = [...newStudentsList, ...students];
     setStudents(updatedStudents);
 
@@ -2138,6 +2181,13 @@ export default function App() {
     password = '123',
     assignedByClass?: ProfessorClassAssignmentSelection[]
   ) => {
+    if (!isSchoolAdminRole && !isSuperAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para cadastrar utilizadores.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const updatedUsers = [newUser, ...schoolUsers];
     setSchoolUsers(updatedUsers);
 
@@ -2236,6 +2286,13 @@ export default function App() {
     updatedUser: SchoolUser,
     assignedByClass?: ProfessorClassAssignmentSelection[]
   ) => {
+    if (!isSchoolAdminRole && !isSuperAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para editar utilizadores.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const existsInSchoolUsers = schoolUsers.some(
       (u) => u.id === updatedUser.id || u.email.toLowerCase() === updatedUser.email.toLowerCase()
     );
@@ -2317,6 +2374,13 @@ export default function App() {
   };
 
   const handleResetUserPassword = (user: SchoolUser, newPassword: string) => {
+    if (!isSchoolAdminRole && !isSuperAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para redefinir senhas de utilizadores.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const cleanEmail = user.email.trim().toLowerCase();
     const existingAccount = accounts.find((a) => a.email.toLowerCase() === cleanEmail);
     const updatedAccounts = existingAccount
@@ -2355,6 +2419,13 @@ export default function App() {
   };
 
   const handleDeleteSchoolUser = (userId: string) => {
+    if (!isSchoolAdminRole && !isSuperAdminRole) {
+      setAccessDeniedNotice(
+        'Restrição de Segurança: Não tem permissão para remover utilizadores.'
+      );
+      setTimeout(() => setAccessDeniedNotice(null), 5000);
+      return;
+    }
     const targetUser = schoolUsers.find((u) => u.id === userId);
     const updatedUsers = schoolUsers.filter((u) => u.id !== userId);
     setSchoolUsers(updatedUsers);
@@ -3692,7 +3763,7 @@ export default function App() {
         onLogout={handleLogout}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
-        onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
+        onOpenMemoryModal={isSchoolAdminRole || isSuperAdminRole ? () => setIsMemoryModalOpen(true) : undefined}
         onOpenInstallPWA={() => setIsPWAInstallModalOpen(true)}
         unreadAnnouncementsCount={unreadAnnouncementsCount}
       />
@@ -3741,7 +3812,7 @@ export default function App() {
           onLogout={handleLogout}
           onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
           onOpenInstallPWA={() => setIsPWAInstallModalOpen(true)}
-          onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
+          onOpenMemoryModal={isSchoolAdminRole || isSuperAdminRole ? () => setIsMemoryModalOpen(true) : undefined}
           onNavigateTab={handleSelectTab}
           students={isStudentOrGuardian ? authorizedStudentPortalStudents : students}
           classes={isStudentOrGuardian ? scopedStudentClasses : classes}
@@ -4250,12 +4321,13 @@ export default function App() {
                 <SubsystemSpecificViews currentInstitution={currentInstitution} />
               )}
 
-              {isSchoolAdminRole && currentTab === 'financial' && (
+              {(isSchoolAdminRole || isTreasurerUser) && currentTab === 'financial' && (
                 <FinancialManager
                   key={openInvoiceModalKey}
                   currentInstitution={currentInstitution}
                   invoices={invoices}
                   students={students}
+                  classes={classes}
                   isTreasurer={isTreasurerUser}
                   currentUser={currentUser}
                   financialNotifications={financialNotifications}
@@ -4275,7 +4347,7 @@ export default function App() {
                 />
               )}
 
-              {(isSchoolAdminRole || isStudentOrGuardian) && currentTab === 'documents' && (
+              {(isSchoolAdminRole || isTreasurerUser || isStudentOrGuardian) && currentTab === 'documents' && (
                 <DocumentCenter
                   currentInstitution={currentInstitution}
                   students={isStudentOrGuardian ? authorizedStudentPortalStudents : students}
@@ -4331,7 +4403,7 @@ export default function App() {
                   />
                 )}
 
-              {(isSchoolAdminRole || isProfessorRole || isStudentOrGuardian) &&
+              {(isSchoolAdminRole || isTreasurerUser || isProfessorRole || isStudentOrGuardian) &&
                 currentTab === 'communications' && (
                   <AnnouncementsCenter
                     announcements={scopedAnnouncements}
